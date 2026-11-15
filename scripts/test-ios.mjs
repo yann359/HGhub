@@ -20,6 +20,17 @@ export async function testIOS({ browser, dispatch, ui, output, report }) {
       const box = await button.boundingBox(); assert(box.width >= 44 && box.height >= 44);
     }
     await page.screenshot({ animations: "disabled", path: join(output, "ios-home-dark.png") });
+    const touch = await context.newCDPSession(page);
+    const tap = async () => {
+      await touch.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [{ x: 150, y: 280 }] });
+      await touch.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
+    };
+    const videoBounds = await page.locator("video").boundingBox();
+    await tap(); await nav.waitFor({ state: "detached" });
+    assert.deepEqual(await page.locator("video").boundingBox(), videoBounds, "Hiding controls must not resize the video");
+    await tap(); await nav.waitFor();
+    await tap(); await tap(); await page.waitForFunction(() => document.querySelector("video")?.paused);
+    await tap(); await tap(); await page.waitForFunction(() => !document.querySelector("video")?.paused);
     // Manual pause survives a background/foreground cycle; foreground playback
     // resumes only if the user had actually requested it.
     await page.locator("video").evaluate(video => video.pause());

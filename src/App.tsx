@@ -30,6 +30,7 @@ function Application() {
   useEffect(()=>{if(app.platform!=="android")return;let disposed=false;let listener:{unregister:()=>Promise<void>}|undefined;void addPluginListener("app","back-button",()=>backRef.current()).then(l=>{if(disposed)void l.unregister();else listener=l;}).catch(()=>{});return()=>{disposed=true;void listener?.unregister();};},[app.platform]);
   const manage=(focusId?:string)=>{host.clearAuth();app.push({kind:"plugins",focusId});};
   const open=(pluginId:string,mediaId:string)=>app.push({kind:"media",pluginId,mediaId});
+  const reserveBottom=isMobile&&!top&&!app.fs&&(app.platform==="ios"?app.tab!=="home":!app.clean);
   useEffect(()=>{const fn=(e:KeyboardEvent)=>{
     const target=e.target as HTMLElement;
     if(e.defaultPrevented||document.querySelector("dialog[open]")||target.closest("input,textarea,select,[contenteditable=true],[role=dialog]"))return;
@@ -40,7 +41,7 @@ function Application() {
   return <div className={`absolute inset-0 flex flex-col bg-canvas win-root plat-${app.platform}`} style={isMobile?{"--sat":"max(env(safe-area-inset-top), 12px)","--sab":"max(env(safe-area-inset-bottom), 16px)"} as React.CSSProperties:undefined}>
     {!isMobile&&<DesktopTitleBar collapsed={collapsed} onToggle={()=>setCollapsed(v=>!v)}/>}
     <div className="relative flex-1 min-h-0 flex">{!isMobile&&!app.theater&&<DesktopRail collapsed={collapsed}/>}<main className={`relative flex-1 min-w-0 overflow-hidden win-main ${app.theater?"is-theater-main":""}`}>
-      <div className="absolute inset-0" style={{bottom:isMobile&&!top&&!app.fs&&!app.clean?(app.platform==="ios"?"calc(82px + var(--sab, 0px))":"calc(40px + var(--sab, 0px))"):0}}>{!top&&(app.tab==="home"?<ImmersiveHome open={open} manage={manage} settings={()=>app.push({kind:"settings"})}/>:app.tab==="category"?<PluginCategory open={open} manage={manage} openContent={(kind,pluginId)=>app.push({kind,pluginId})}/>:app.tab==="search"?<PluginSearch open={open} manage={manage}/>:<LibraryPage open={open} manage={manage} settings={()=>app.push({kind:"settings"})}/>)}</div>
+      <div className="absolute inset-0" style={{bottom:reserveBottom?(app.platform==="ios"?"calc(82px + var(--sab, 0px))":"calc(40px + var(--sab, 0px))"):0}}>{!top&&(app.tab==="home"?<ImmersiveHome open={open} manage={manage} settings={()=>app.push({kind:"settings"})}/>:app.tab==="category"?<PluginCategory open={open} manage={manage} openContent={(kind,pluginId)=>app.push({kind,pluginId})}/>:app.tab==="search"?<PluginSearch open={open} manage={manage}/>:<LibraryPage open={open} manage={manage} settings={()=>app.push({kind:"settings"})}/>)}</div>
       {app.stack.map((page,i)=><div key={page.key} className={`absolute inset-0 bg-bg ${i===app.stack.length-1?"z-30":"invisible pointer-events-none"}`}>
         {page.kind==="plugins"?<Plugins onBack={app.pop} focusId={page.focusId}/>:page.kind==="settings"?<ApplicationSettings onBack={app.pop}/>:page.kind==="section"?<SectionRoute {...page} open={open} onBack={app.pop}/>:page.kind==="media"?<MediaPage pluginId={page.pluginId} mediaId={page.mediaId} start={page.start} onBack={app.pop} manage={manage} active={i===app.stack.length-1} onSwitch={(pluginId,mediaId,start)=>app.replace({kind:"media",pluginId,mediaId,start})}/>:<ContentRoute page={page} active={i===app.stack.length-1}/>}
       </div>)}

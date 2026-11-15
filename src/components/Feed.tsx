@@ -31,7 +31,7 @@ export default function Feed({media, position, active=true, error="", onRetry, o
  title="", author="", description="", score, poster:posterUrl, episodeLabel="", episodeCount=0, favorite=false, onFavorite,
  panels={}, social, onPanelChange, onBack, onNext, onPrevious, onNextEpisode, queueIndex=0, total=1}: FeedProps) {
   const store=useStore(), {muted,setMuted,volume,setVolume}=store;
-  const isDesktop=!isMobile, bottomInset=0;
+  const isDesktop=!isMobile, bottomInset=platform==="ios"&&store.tab==="home"&&!store.stack.length?82:0;
   const boxRef=useRef<HTMLDivElement>(null), videoRef=useRef<VideoHandle>(null);
   const lastWheel=useRef(0);
   const playKey=media?.sessionId || "pending", playUrl=media?.url;

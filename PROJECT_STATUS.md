@@ -1,7 +1,7 @@
 # HGhub iOS 定制版开发状态
 
 更新：2026-11-15（Asia/Shanghai）
-状态：本地核心回归通过，正在修复并验证真实 macOS 构建；尚未生成或验证 IPA。
+状态：本地核心回归通过，第二轮 macOS 已真实生成并校验未签名 IPA；正在构建最终 iOS 16.4 版本。
 
 ## 目标
 保留插件视频播放器全部能力，提供 Apple 风格 iPhone UI，构建真实 ARM64 Release 未签名 IPA，仅供非商业学习与个人使用。
@@ -29,11 +29,15 @@
 ## 验证进度
 - 前端类型检查/生产构建：通过；Vite 仍提示主 JS 包约 921KB（gzip 285KB），不是构建失败。
 - Windows Rust 主程序 `cargo check --locked`：通过。
+- Windows Rust 主程序 3 项单元测试：通过。
 - Rust HPP：本机 52 项测试通过；macOS 首轮全部通过。
 - 完整插件/播放器集成回归通过：真实 Rust/QuickJS + React + Edge，仅替换 Tauri IPC，使用虚构插件/原创合成 MP4/HLS；包括导入、更新失败恢复、启停、鉴权、多源、线路、选集、直播、收藏/历史/续播、Range/取消和会话释放。
 - Windows/Android 界面回归与 iPhone 尺寸回归通过；iOS 44px 导航、320px/横屏无溢出、三种主题与模拟前后台验证完成。注意：UA/尺寸模拟仍是 Chromium，不能代替 WKWebView 真机。
-- macOS 首轮 43717039167：依赖、前端、Rust、工程初始化通过；参数服务器等待超时。已按 Tauri 官方源码修复使用基础 Bundle ID 查找地址文件，第二轮 43717838058 正在运行。
-- IPA 结构、Mach-O、Info.plist、资源/权限：检查脚本已实现，待实际产物。
+- macOS 首轮 43717039167 参数服务器等待超时已修复；第二轮 43717838058 成功，真实 ARM64 Release 未签名 IPA 已通过首版结构检查并上传 Artifacts。
+- 中间产物：https://github.com/yann359/HGhub/actions/runs/43717838058/artifacts/14163682045（源码 9282462，最低 15.4；仅作构建证据，最终交付将以 16.4 版本替代）。
+- 完整云端日志：https://github.com/yann359/HGhub/actions/runs/43717838058/artifacts/14163552451。
+- iOS 清屏隐藏控制栏时保持视频边界不变的回归通过，避免画面跳动。
+- IPA 最终结构、Mach-O、Info.plist、图标资源/权限：等待最终版本重建与下载后二次校验。
 - iPhone 真机、原生横屏、PiP、长时间内存：未验证，没有连接设备。
 
 ## 下一步
