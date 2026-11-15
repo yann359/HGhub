@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { join } from "node:path";
 import { readFile } from "node:fs/promises";
+import { testIOS } from "./test-ios.mjs";
 
 // Exercises the production UI against the real Rust/QuickJS test host.
 export async function testFrontend({ page, browser, dispatch, base, ui, root, output, report }) {
@@ -183,4 +184,5 @@ export async function testFrontend({ page, browser, dispatch, base, ui, root, ou
   await mobile.setViewportSize({width:320,height:680});assert(await mobile.locator(".legacy-settings").evaluate(e=>e.scrollWidth<=innerWidth));
   assert.deepEqual(mobileErrors,[]);await context.close();
   report.passed.push("Mobile 40px text navigation, clean-screen tap, hold 2x/release, vertical swipe, episode sheet, grouped settings and 320px overflow verified");
+  await testIOS({ browser, dispatch, ui, output, report });
 }

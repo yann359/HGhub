@@ -31,6 +31,8 @@ HGhub 将浏览、搜索、播放和个人片库放在同一个应用中。通�
 
 ## 开始使用
 
+iPhone 定制分支的构建、个人签名与测试范围见 **[iOS 安装与构建说明](docs/IOS_BUILD.md)**，实际交付进度见 **[PROJECT_STATUS.md](PROJECT_STATUS.md)**。
+
 插件版处于早期开发阶段，目前可[从源码运行或构建](docs/DEVELOPMENT.md)。当前重点完善 Windows 与 Android，其他平台仍在适配和验证；详见[支持状态](docs/developers/status.md)。
 
 1. 打开 **插件中心 → 导入与订阅**。移动端从“我的”进入插件中心。

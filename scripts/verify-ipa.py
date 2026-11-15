@@ -3,7 +3,6 @@
 import argparse
 import hashlib
 import json
-import os
 import plistlib
 import struct
 import subprocess
@@ -27,7 +26,7 @@ def validate(path, bundle_id, version):
         assert info["CFBundleShortVersionString"] == version, "Unexpected app version"
         assert info.get("CFBundlePackageType") == "APPL", "Not an application bundle"
         assert info.get("DTPlatformName") == "iphoneos", "Not built for physical iPhone"
-        assert tuple(map(int, info["MinimumOSVersion"].split("."))) >= (15, 4), "Deployment target mismatch"
+        assert tuple(map(int, info["MinimumOSVersion"].split("."))) >= (16, 4), "Deployment target mismatch"
         assert not info.get("NSAppTransportSecurity", {}).get("NSAllowsArbitraryLoads"), "Broad ATS exception"
         for key in ["UISupportedInterfaceOrientations", "UISupportedInterfaceOrientations~ipad"]:
             assert {"UIInterfaceOrientationPortrait", "UIInterfaceOrientationLandscapeLeft", "UIInterfaceOrientationLandscapeRight"} <= set(info.get(key, [])), "Missing orientations"
@@ -54,11 +53,13 @@ def validate(path, bundle_id, version):
         assert not any(n.endswith(".dSYM/") for n in names), "Unexpected debug symbols in payload"
         assert not any(n.startswith(root + "_CodeSignature/") for n in names), "Expected an unsigned app"
         assert root + "embedded.mobileprovision" not in names, "Unexpected provisioning profile"
+        with open(path, "rb") as source:
+            digest = hashlib.file_digest(source, "sha256").hexdigest()
         result = {"bundleId": bundle_id, "version": version, "minimumOS": info["MinimumOSVersion"],
                   "executable": info["CFBundleExecutable"], "architecture": "arm64", "platform": "iphoneos",
                   "configuration": "release", "encrypted": False, "signature": "unsigned",
                   "files": len(names), "bytes": Path(path).stat().st_size,
-                  "sha256": hashlib.file_digest(open(path, "rb"), "sha256").hexdigest(),
+                  "sha256": digest,
                   "deviceTested": False, "checks": "ZIP CRC, Payload, plist, executable mode, Mach-O, device platform, ATS, orientations, dev URL, encryption, signature"}
         try:
             result["sourceCommit"] = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()

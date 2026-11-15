@@ -8,7 +8,7 @@ cd "$ROOT"
 mkdir -p artifacts/logs
 # All tool output is retained, including failures.
 exec > >(tee "$ROOT/artifacts/logs/ios-build.log") 2>&1
-export IPHONEOS_DEPLOYMENT_TARGET=15.4
+export IPHONEOS_DEPLOYMENT_TARGET=16.4
 export HGHUB_IOS_VERSION="$VERSION"
 export LIBCLANG_PATH="$(xcode-select -p)/Toolchains/XcodeDefault.xctoolchain/usr/lib"
 # No fake Team ID and no signing assets. tauri 2.10.1 has no ios --no-sign.

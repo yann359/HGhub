@@ -6,7 +6,7 @@
   },
   "bundle": {
     "iOS": {
-      "minimumSystemVersion": "15.4"
+      "minimumSystemVersion": "16.4"
     }
   },
   "identifier": "com.yann359.hghub.ios",

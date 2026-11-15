@@ -1,7 +1,7 @@
 # HGhub iOS 定制版开发状态
 
 更新：2026-11-15（Asia/Shanghai）
-状态：开发与实际构建验证中，尚未生成或验证 IPA。
+状态：本地核心回归通过，正在修复并验证真实 macOS 构建；尚未生成或验证 IPA。
 
 ## 目标
 保留插件视频播放器全部能力，提供 Apple 风格 iPhone UI，构建真实 ARM64 Release 未签名 IPA，仅供非商业学习与个人使用。
@@ -23,19 +23,21 @@
 - 全屏使用实际 HTMLVideoElement WebKit/Fullscreen API，画中画按运行时支持调用；移除无宿主实现的 set_orientation 调用，不使用 UIDevice KVC。
 - QuickJS iOS target 启用 bindgen，并按真实 Xcode SDK 生成绑定。
 - 移除虚假 Team ID；不申请任意网络权限；仅声明本机媒体所需 NSAllowsLocalNetworking。
-- 最低 iOS 15.4：现有插件选择器使用 dialog.showModal，该能力需要 iOS 15.4；不静默假装支持 15.0。
+- 最低 iOS 16.4：项目现有 Tailwind CSS 4 的官方 Safari 支持下限为 16.4，且插件选择器需要 dialog.showModal；不声明低于实际依赖支持范围的系统。
 - 改造 macOS GitHub Actions、ARM64 release 编译、结构化 IPA 检查、日志及 Artifacts；不自动覆盖正式 Release。
 
 ## 验证进度
-- 前端类型检查/生产构建：通过首轮，最终修改后需复测。
-- Rust HPP 测试：本机执行中。
-- 插件完整流程、播放器与 UI 回归：待执行。
-- macOS iOS 编译：待首次运行。
+- 前端类型检查/生产构建：通过；Vite 仍提示主 JS 包约 921KB（gzip 285KB），不是构建失败。
+- Windows Rust 主程序 `cargo check --locked`：通过。
+- Rust HPP：本机 52 项测试通过；macOS 首轮全部通过。
+- 完整插件/播放器集成回归通过：真实 Rust/QuickJS + React + Edge，仅替换 Tauri IPC，使用虚构插件/原创合成 MP4/HLS；包括导入、更新失败恢复、启停、鉴权、多源、线路、选集、直播、收藏/历史/续播、Range/取消和会话释放。
+- Windows/Android 界面回归与 iPhone 尺寸回归通过；iOS 44px 导航、320px/横屏无溢出、三种主题与模拟前后台验证完成。注意：UA/尺寸模拟仍是 Chromium，不能代替 WKWebView 真机。
+- macOS 首轮 43717039167：依赖、前端、Rust、工程初始化通过；参数服务器等待超时。已按 Tauri 官方源码修复使用基础 Bundle ID 查找地址文件，第二轮 43717838058 正在运行。
 - IPA 结构、Mach-O、Info.plist、资源/权限：检查脚本已实现，待实际产物。
 - iPhone 真机、原生横屏、PiP、长时间内存：未验证，没有连接设备。
 
 ## 下一步
-完成本机回归，推送独立分支，运行并修复 GitHub Actions，下载校验实际产物，补充日志、下载地址和签名安装说明。
+继续修复实际 Xcode 编译直到产物可校验；对最终源码重新运行工作流并下载实际 IPA。个人签名/安装、构建与真机清单见 docs/IOS_BUILD.md。
 
 ## 继续开发约定
 每次继续前先读本文件、根目录 PROJECT_STATUS.md、当前源码及 git status/log。不得将浏览器模拟、构建成功等同于 iPhone 真机通过。

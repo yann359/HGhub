@@ -6,6 +6,9 @@ node_modules/
 dist/
 dist-ssr/
 test-results/
+artifacts/
+build_output/
+__pycache__/
 src-tauri/target/
 src-tauri/crates/*/target/
 src-tauri/gen/

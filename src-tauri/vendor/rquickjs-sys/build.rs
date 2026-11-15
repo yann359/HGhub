@@ -199,8 +199,8 @@ fn main() {
         bindgen_cflags.push("-isysroot".into());
         bindgen_cflags.push(String::from_utf8(output.stdout).unwrap().trim().into());
         bindgen_cflags.push(format!("--target={}", if simulator {
-            if target.starts_with("x86_64") { "x86_64-apple-ios15.4-simulator" } else { "arm64-apple-ios15.4-simulator" }
-        } else { "arm64-apple-ios15.4" }));
+            if target.starts_with("x86_64") { "x86_64-apple-ios16.4-simulator" } else { "arm64-apple-ios16.4-simulator" }
+        } else { "arm64-apple-ios16.4" }));
     }
 
     if target_os == "android" {

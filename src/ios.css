@@ -79,6 +79,13 @@ html[data-platform="ios"] .hg-player-ui button,
 html[data-platform="ios"] button[aria-label] { min-width: 44px; min-height: 44px; }
 html[data-platform="ios"] button[aria-label="播放进度"] { min-height: 44px; }
 html[data-platform="ios"] .hg-range { min-height: 44px; }
+html[data-platform="ios"] .hg-toggle { background: transparent; flex-shrink: 0; }
+html[data-platform="ios"] .hg-toggle::before {
+  content: ""; position: absolute; width: 46px; height: 28px; left: 0; top: 8px;
+  border-radius: 20px; background: var(--p-s4); transition: background-color .2s;
+}
+html[data-platform="ios"] .hg-toggle[aria-pressed="true"]::before { background: var(--p-primary); }
+html[data-platform="ios"] .hg-toggle > span { top: 12px; }
 html[data-platform="ios"] input:not([type="range"]), html[data-platform="ios"] textarea,
 html[data-platform="ios"] select { font-size: max(1rem, 16px); }
 html[data-platform="ios"] .scroll-y { -webkit-overflow-scrolling: touch; scrollbar-width: none; }
@@ -119,6 +126,7 @@ html[data-platform="ios"] .hpp-plugin-icon { border-radius: 14px; }
 html[data-platform="ios"] .hpp-local-library { grid-template-columns: repeat(2,minmax(0,1fr)); }
 html[data-platform="ios"] .hpp-local-entry { padding: 0; }
 html[data-platform="ios"] .hpp-search-input { border-radius: 16px; }
+html[data-platform="ios"] .legacy-search-form { min-width: 0; }
 html[data-platform="ios"] .hpp-source-picker, html[data-platform="ios"] .hpp-page dialog,
 html[data-platform="ios"] .hpp-modal {
   position: fixed; inset: auto 0 0; margin: 0; width: 100%; max-width: none;
