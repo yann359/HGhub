@@ -186,6 +186,23 @@ fn main() {
 
     let mut bindgen_cflags = vec![];
 
+    if target_os == "ios" {
+        // Bindings must match UIKit's ABI, not the macOS build host. QuickJS
+        // ships macOS bindings only, and iOS SDK headers need an explicit root.
+        let target = env::var("TARGET").unwrap();
+        let simulator = target.ends_with("-sim") || target.starts_with("x86_64");
+        let sdk = if simulator { "iphonesimulator" } else { "iphoneos" };
+        let output = process::Command::new("xcrun")
+            .args(["--sdk", sdk, "--show-sdk-path"])
+            .output().expect("iOS bindings require Xcode and xcrun");
+        assert!(output.status.success(), "Unable to locate iOS SDK");
+        bindgen_cflags.push("-isysroot".into());
+        bindgen_cflags.push(String::from_utf8(output.stdout).unwrap().trim().into());
+        bindgen_cflags.push(format!("--target={}", if simulator {
+            if target.starts_with("x86_64") { "x86_64-apple-ios15.4-simulator" } else { "arm64-apple-ios15.4-simulator" }
+        } else { "arm64-apple-ios15.4" }));
+    }
+
     if target_os == "android" {
         println!("cargo:rerun-if-env-changed=NDK_HOME");
         println!("cargo:rerun-if-env-changed=ANDROID_NDK_HOME");

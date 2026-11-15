@@ -1,67 +1,49 @@
 #!/usr/bin/env bash
 set -euo pipefail
-
-VERSION="${1:?Usage: build-ios-unsigned.sh VERSION}"
-ROOT="$(pwd)"
-LOG="$ROOT/ios-build-session.log"
-ADDR_FILE="$(node -p "require('os').tmpdir() + '/' + require('./src-tauri/tauri.conf.json').identifier + '-server-addr'")"
-mkdir -p artifacts
+VERSION="${1:-1.0.0}"
+[[ "$(uname -s)" == Darwin ]] || { echo 'Xcode on macOS is required'; exit 1; }
+[[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || exit 1
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+cd "$ROOT"
+mkdir -p artifacts/logs
+# All tool output is retained, including failures.
+exec > >(tee "$ROOT/artifacts/logs/ios-build.log") 2>&1
+export IPHONEOS_DEPLOYMENT_TARGET=15.4
+export HGHUB_IOS_VERSION="$VERSION"
+export LIBCLANG_PATH="$(xcode-select -p)/Toolchains/XcodeDefault.xctoolchain/usr/lib"
+# No fake Team ID and no signing assets. tauri 2.10.1 has no ios --no-sign.
+# --open starts the Release options server used by the generated Rust build phase.
+IDENTIFIER="$(node -p "require('./src-tauri/tauri.ios.conf.json').identifier")"
+ADDR_FILE="$(node -p "require('os').tmpdir()")/$IDENTIFIER-server-addr"
 rm -f "$ADDR_FILE"
-
-# Tauri 2.10.1 has no ios --no-sign flag. Keep its release options server
-# alive for the generated Xcode 'Build Rust Code' phase instead.
-pnpm tauri ios build --open --ci --features custom-protocol >"$LOG" 2>&1 &
+pnpm tauri ios build --open --ci --features custom-protocol -- --locked > artifacts/logs/tauri-session.log 2>&1 &
 SESSION_PID=$!
-cleanup() {
-  kill "$SESSION_PID" 2>/dev/null || true
-  cat "$LOG"
-}
+cleanup() { kill "$SESSION_PID" 2>/dev/null || true; cat artifacts/logs/tauri-session.log; }
 trap cleanup EXIT
-for ((attempt = 0; attempt < 180; attempt++)); do
-  if ! kill -0 "$SESSION_PID" 2>/dev/null; then
-    echo 'Tauri build session exited before becoming ready' >&2
-    exit 1
-  fi
-  if [[ -s "$ADDR_FILE" ]]; then
-    break
-  fi
+for ((attempt=0; attempt<240; attempt++)); do
+  kill -0 "$SESSION_PID" 2>/dev/null || { echo 'Tauri options server exited'; exit 1; }
+  [[ ! -s "$ADDR_FILE" ]] || break
   sleep 1
 done
-if [[ ! -s "$ADDR_FILE" ]]; then
-  echo 'Timed out waiting for the Tauri build options server' >&2
-  exit 1
-fi
-
-# Tauri generates lowercase debug/release configurations. Using Release
-# silently selected debug in the original workflow.
-XCODE_TOOLCHAIN="$(xcode-select -p)/Toolchains/XcodeDefault.xctoolchain"
-test -d "$XCODE_TOOLCHAIN/usr/lib/swift/iphoneos"
+[[ -s "$ADDR_FILE" ]] || { echo 'Timed out waiting for Tauri options server'; exit 1; }
 xcodebuild build \
-  -toolchain com.apple.dt.toolchain.XcodeDefault \
   -project src-tauri/gen/apple/huangguo-client.xcodeproj \
-  -scheme huangguo-client_iOS \
-  -configuration release \
-  -sdk iphoneos \
-  -destination 'generic/platform=iOS' \
+  -scheme huangguo-client_iOS -configuration release \
+  -sdk iphoneos -destination 'generic/platform=iOS' \
   -derivedDataPath "$ROOT/build_output" \
-  TOOLCHAIN_DIR="$XCODE_TOOLCHAIN" \
-  CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY=""
-
+  -resultBundlePath "$ROOT/build_output/ios-release.xcresult" \
+  ARCHS=arm64 ONLY_ACTIVE_ARCH=NO \
+  CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" DEVELOPMENT_TEAM="" \
+  | tee artifacts/logs/xcodebuild.log
 APP="$ROOT/build_output/Build/Products/release-iphoneos/HGhub.app"
-EXECUTABLE=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$APP/Info.plist")
-test -s "$APP/$EXECUTABLE"
-file "$APP/$EXECUTABLE" | grep 'Mach-O.*arm64'
-# Avoid grep -q with pipefail: early pipe closure can hide a match.
-strings "$APP/$EXECUTABLE" > "$ROOT/ios-binary-strings.txt"
-if grep -F 'localhost:1420' "$ROOT/ios-binary-strings.txt"; then
-  echo 'Refusing to package a development build' >&2
-  exit 1
-fi
-
-PACKAGE_DIR=$(mktemp -d)
-mkdir -p "$PACKAGE_DIR/Payload"
-cp -R "$APP" "$PACKAGE_DIR/Payload/"
-IPA="$ROOT/artifacts/HGhub_${VERSION}_ios.ipa"
-(cd "$PACKAGE_DIR" && zip -qr "$IPA" Payload)
-unzip -tq "$IPA"
-ls -lh "$IPA"
+[[ -d "$APP" ]] || { echo 'Expected Release iPhone app missing'; exit 1; }
+STAGE="$(mktemp -d)"
+trap 'rm -rf "$STAGE"; cleanup' EXIT
+mkdir "$STAGE/Payload"
+# Preserve executable modes, bundle directories and symlinks.
+ditto "$APP" "$STAGE/Payload/HGhub.app"
+IPA="$ROOT/artifacts/HGhub-iOS-LiquidGlass-v$VERSION.ipa"
+(cd "$STAGE" && /usr/bin/zip -qry "$IPA" Payload)
+python3 scripts/verify-ipa.py "$IPA" --bundle-id "$IDENTIFIER" --version "$VERSION" \
+  --manifest artifacts/ios-build-manifest.json
+(cd artifacts && shasum -a 256 "$(basename "$IPA")" > SHA256SUMS.txt)

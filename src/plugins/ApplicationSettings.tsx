@@ -36,7 +36,7 @@ export default function ApplicationSettings({ onBack }: { onBack: () => void }) 
       </div>
     </div>
     <div className="flex-1 min-h-0 scroll-y px-4 pt-1 pb-10"><div className="max-w-[720px] mx-auto"><Notice error={error||app.error}/>
-      <Section title="外观"><Setting icon={app.theme==="dark"?<IMoon size={16}/>:<ISun size={16}/>} title="深色外观" description="切换应用的深色与浅色外观"><Toggle label="深色外观" on={app.theme==="dark"} onChange={on=>app.setTheme(on?"dark":"light")}/></Setting></Section>
+      <Section title="外观"><Setting icon={app.theme==="dark"?<IMoon size={16}/>:<ISun size={16}/>} title="外观模式" description="浅色、深色或跟随系统自动切换"><select aria-label="外观模式" value={app.themeMode} onChange={e=>app.setTheme(e.target.value as "system"|"light"|"dark")}><option value="system">跟随系统</option><option value="light">浅色</option><option value="dark">深色</option></select></Setting></Section>
       <Section title="播放">
         <button className="w-full text-left" onClick={()=>setPicker(true)} aria-haspopup="dialog"><Setting icon={<IGrid size={16}/>} title="首页播放片源" description={host.prefs.homeMode==="all"?`全部片源 · ${available.length} 个`:host.prefs.homeMode==="single"?selected[0]?.meta.name||"尚未选择片源":`已选择 ${selected.length} 个片源`}><IChevR size={15}/></Setting></button>
         <Setting icon={<IVolMute size={16}/>} title="启动时静音" description="每次启动默认静音，下次启动生效"><Toggle label="启动时静音" on={app.muteOnStartup} onChange={app.setMuteOnStartup}/></Setting>

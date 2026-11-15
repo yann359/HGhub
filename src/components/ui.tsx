@@ -28,7 +28,7 @@ export function Sheet({ open, onClose, children, z = "z-40" }: { open: boolean; 
     <div className={`absolute inset-0 ${z}`}>
       <div className={`absolute inset-0 ${open ? "a-fade" : "opacity-0 transition-opacity duration-200"}`}
         style={{ background: "rgba(0,0,0,.55)" }} onClick={onClose} />
-      <div className={`absolute bottom-0 inset-x-0 bg-s2 elev-3 overflow-hidden ${open ? "a-sheet" : "a-sheet-out"}`}
+      <div role="dialog" aria-modal="true" aria-label="播放面板" className={`absolute bottom-0 inset-x-0 hg-sheet bg-s2 elev-3 overflow-hidden ${open ? "a-sheet" : "a-sheet-out"}`}
         style={{ paddingBottom: "var(--sab, 0px)", borderTopLeftRadius: "var(--r-lg)", borderTopRightRadius: "var(--r-lg)" }}>
         <div className="pt-3 pb-1 flex justify-center"><div className="w-8 h-1 rounded-full bg-dim/70" /></div>
         {children}

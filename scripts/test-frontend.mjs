@@ -115,7 +115,7 @@ export async function testFrontend({ page, browser, dispatch, base, ui, root, ou
   await page.getByRole("button",{name:"单选",exact:true}).click();
   await page.getByRole("radio",{name:/光影放映室/}).check();
   await page.getByRole("button",{name:"保存选择",exact:true}).click();
-  await page.getByRole("button",{name:"深色外观",exact:true}).click();
+  await page.getByRole("combobox",{name:"外观模式",exact:true}).selectOption("light");
   await rail.getByRole("button",{name:"首页",exact:true}).click();
   await page.waitForFunction(()=>document.querySelector("video")?.currentTime>.2);
   await page.getByRole("button",{name:"选集",exact:true}).click();

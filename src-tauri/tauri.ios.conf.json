@@ -1,11 +1,14 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "build": {
-    "devUrl": null
+    "devUrl": null,
+    "beforeBuildCommand": "pnpm build"
   },
   "bundle": {
     "iOS": {
-      "minimumSystemVersion": "15.0"
+      "minimumSystemVersion": "15.4"
     }
-  }
+  },
+  "identifier": "com.yann359.hghub.ios",
+  "version": "1.0.0"
 }

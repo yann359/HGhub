@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
-import { invoke } from "@tauri-apps/api/core";
-import { isMobile } from "../environment";
+import { fullscreen as enterVideoFullscreen, pictureInPicture } from "../mediaCapabilities";
+import { isMobile, platform } from "../environment";
 import { fmtTime } from "../format";
 import { useStore } from "../store";
 import { Sheet } from "./ui";
@@ -9,7 +9,7 @@ import PlayerControls from "./PlayerControls";
 import PlaybackLock from "./PlaybackLock";
 import { setBackHandler } from "../back";
 import type { PreparedMedia } from "../plugins/client";
-import { IBack, IBoltF, IChevR, IChevronDown, IChevronUp, IClose, ICommentF, ICompress, IExpand, IList, ILockF, IPauseF, IPlayF, ISearch, ISettings, IStar, IStarF, IVol, IVolMute } from "../icons";
+import { IBack, IPip, IBoltF, IChevR, IChevronDown, IChevronUp, IClose, ICommentF, ICompress, IExpand, IList, ILockF, IPauseF, IPlayF, ISearch, ISettings, IStar, IStarF, IVol, IVolMute } from "../icons";
 
 export type PlayerPanel = "detail" | "episodes" | "comments" | "playback";
 export interface FeedPresentation {
@@ -174,11 +174,16 @@ export default function Feed({media, position, active=true, error="", onRetry, o
 
   /* 进入 / 退出全屏：对横屏视频直接调用原生屏幕方向切换，让手机系统界面真正横过来 */
   const enterFs = useCallback(() => {
+    if (platform === "ios") {
+      const video = videoRef.current?.el(), container = boxRef.current;
+      if (video && container) void enterVideoFullscreen(video, container).catch(e => toast(e.message));
+      return;
+    }
     keepPlayingThroughTransition();
     setClean(false);
     setFs(true);
     if (isLandscapeVideo) {
-      invoke("set_orientation", { landscape: true }).catch(() => {});
+
       try {
         (screen.orientation as unknown as { lock?: (o: string) => Promise<void> })?.lock?.("landscape")?.catch(() => {});
       } catch { /* ignore */ }
@@ -189,14 +194,14 @@ export default function Feed({media, position, active=true, error="", onRetry, o
     keepPlayingThroughTransition();
     setClean(false);
     setFs(false);
-    invoke("set_orientation", { landscape: false }).catch(() => {});
+
     try { screen.orientation?.unlock?.(); } catch { /* ignore */ }
   }, [setClean, setFs, keepPlayingThroughTransition]);
 
   /* 全屏状态下若视频宽高刚加载出来且为横屏，自动补发一次横屏指令 */
   useEffect(() => {
     if (!isDesktop && fs && isLandscapeVideo) {
-      invoke("set_orientation", { landscape: true }).catch(() => {});
+
     }
   }, [isDesktop, fs, isLandscapeVideo]);
 
@@ -493,12 +498,8 @@ export default function Feed({media, position, active=true, error="", onRetry, o
   };
 
   const togglePip = async () => {
-    try {
-      const v = videoRef.current?.el();
-      if (document.pictureInPictureElement) await document.exitPictureInPicture();
-      else if (v && document.pictureInPictureEnabled) await v.requestPictureInPicture();
-      else toast("当前环境不支持画中画", "info");
-    } catch { toast("画中画开启失败", "info"); }
+    try { const video = videoRef.current?.el(); if (video) await pictureInPicture(video); }
+    catch (e) { toast((e as Error).message || "画中画暂不可用"); }
   };
 
   const effectiveFit: "contain" | "cover" = isDesktop
@@ -773,6 +774,7 @@ export default function Feed({media, position, active=true, error="", onRetry, o
                     <ICommentF size={26} className="hg-ink hg-ov-shadow" />
                     <span className="text-[10.5px] hg-ink-2 hg-ov-shadow">评论</span>
                   </button>}
+                  {platform === "ios" && <button onClick={togglePip} className="flex flex-col items-center gap-1 pressable" aria-label="画中画"><IPip size={24}/><span className="text-[10.5px] hg-ink-2">画中画</span></button>}
                   <button onClick={enterFs} className="flex flex-col items-center gap-1 pressable" aria-label="全屏">
                     <IExpand size={26} className="hg-ink hg-ov-shadow" />
                     <span className="text-[10.5px] hg-ink-2 hg-ov-shadow">全屏</span>

@@ -13,7 +13,7 @@ export default defineConfig({
   clearScreen: false,
   // 版本号只维护 package.json（CI 会按 tag 改写它），界面里的版本由这里注入，避免写死后漂移
   define: {
-    __APP_VERSION__: JSON.stringify(version),
+    __APP_VERSION__: JSON.stringify(process.env.HGHUB_IOS_VERSION || version),
   },
   server: {
     port: 1420,

@@ -1,0 +1,154 @@
+/* WebKit glass styling, not SwiftUI Liquid Glass. Scoped to iOS only. */
+html[data-platform="ios"] {
+  font: -apple-system-body;
+  -webkit-text-size-adjust: 100%;
+  --p-canvas: #000;
+  --p-bg: #0c0c0f;
+  --p-s1: #1c1c1e;
+  --p-s2: #242426;
+  --p-s3: #303034;
+  --p-s4: #414146;
+  --p-primary: #ff647c;
+  --p-on-primary: #fff;
+  --p-pc: #4a2330;
+  --p-on-pc: #ffdce3;
+  --p-mut: #b6b6bf;
+  --p-dim: #90909a;
+  --p-glass: rgba(34, 34, 39, .84);
+  --p-glass-border: rgba(255,255,255,.16);
+  --p-hover: rgba(255,255,255,.08);
+}
+html[data-platform="ios"].theme-light {
+  --p-canvas: #f4f3f7;
+  --p-bg: #f4f3f7;
+  --p-s1: #fff;
+  --p-s2: #fff;
+  --p-s3: #eeedf2;
+  --p-s4: #dfdfe6;
+  --p-on: #1c1c1e;
+  --p-mut: #62626b;
+  --p-dim: #767680;
+  --p-primary: #c83254;
+  --p-pc: #fbe5eb;
+  --p-on-pc: #8b2440;
+  --p-glass: rgba(255,255,255,.88);
+  --p-glass-border: rgba(255,255,255,.9);
+  --p-hover: rgba(0,0,0,.045);
+}
+html[data-platform="ios"] .plat-ios {
+  --r-sm: 12px; --r-md: 18px; --r-lg: 24px;
+  --nav-h: 88px;
+}
+html[data-platform="ios"] #root { isolation: isolate; }
+html[data-platform="ios"] button, html[data-platform="ios"] select { touch-action: manipulation; }
+html[data-platform="ios"] button:focus-visible, html[data-platform="ios"] input:focus-visible,
+html[data-platform="ios"] select:focus-visible { outline: 3px solid var(--p-primary); outline-offset: 3px; }
+.ios-tabbar {
+  position: absolute; z-index: 30;
+  bottom: calc(var(--sab, 0px) + 8px);
+  left: max(16px, env(safe-area-inset-left));
+  right: max(16px, env(safe-area-inset-right));
+  display: flex; gap: 4px; padding: 5px;
+  border-radius: 32px;
+  color: var(--p-mut); background: var(--p-glass);
+  border: 1px solid var(--p-glass-border);
+  box-shadow: 0 8px 32px rgba(0,0,0,.16), inset 0 1px 0 rgba(255,255,255,.12);
+  -webkit-backdrop-filter: blur(24px) saturate(160%);
+  backdrop-filter: blur(24px) saturate(160%);
+}
+.ios-tabbar.over-video { --p-glass: rgba(25,25,30,.84); color: #c8c8d0; --p-primary: #ff8095; }
+.ios-tabbar button {
+  flex: 1; min-width: 0; min-height: 56px;
+  display: flex; flex-direction: column; justify-content: center; align-items: center;
+  gap: 3px; border-radius: 27px; font-size: .625rem; font-weight: 500;
+  transition: color .2s, background-color .2s, transform .2s;
+}
+.ios-tabbar button[aria-current="page"] { color: var(--p-primary); background: var(--p-hover); font-weight: 700; }
+.ios-tabbar button:active { transform: scale(.96); }
+html[data-platform="ios"] .hg-sheet {
+  max-height: calc(100% - env(safe-area-inset-top) - 12px);
+  overflow-y: auto;
+  border: 1px solid var(--p-glass-border);
+  background: var(--p-glass);
+  border-radius: 28px 28px 0 0 !important;
+  -webkit-backdrop-filter: blur(28px) saturate(140%);
+  backdrop-filter: blur(28px) saturate(140%);
+}
+html[data-platform="ios"] .hg-sheet button,
+html[data-platform="ios"] .hg-player-ui button,
+html[data-platform="ios"] button[aria-label] { min-width: 44px; min-height: 44px; }
+html[data-platform="ios"] button[aria-label="播放进度"] { min-height: 44px; }
+html[data-platform="ios"] .hg-range { min-height: 44px; }
+html[data-platform="ios"] input:not([type="range"]), html[data-platform="ios"] textarea,
+html[data-platform="ios"] select { font-size: max(1rem, 16px); }
+html[data-platform="ios"] .scroll-y { -webkit-overflow-scrolling: touch; scrollbar-width: none; }
+html[data-platform="ios"] .scroll-y::-webkit-scrollbar { display: none; }
+html[data-platform="ios"] .plat-ios > .relative { padding-left: env(safe-area-inset-left); padding-right: env(safe-area-inset-right); }
+html[data-platform="ios"] .text-\[24px\] { font-size: 1.875rem; letter-spacing: -.035em; line-height: 1.2; }
+html[data-platform="ios"] .appearance-select { max-width: 44%; }
+html[data-platform="ios"] .sources-page { padding: calc(var(--sat, 0px) + 12px) max(20px, env(safe-area-inset-right)) calc(var(--sab, 0px) + 28px) max(20px, env(safe-area-inset-left)); }
+@supports not (backdrop-filter: blur(1px)) {
+  .ios-tabbar, html[data-platform="ios"] .hg-sheet { background: var(--p-s2); }
+}
+@media (prefers-reduced-transparency: reduce) {
+  .ios-tabbar, html[data-platform="ios"] .hg-sheet { backdrop-filter: none; -webkit-backdrop-filter: none; background: var(--p-s2); }
+}
+@media (prefers-reduced-motion: reduce) {
+  html[data-platform="ios"] *, html[data-platform="ios"] *::before, html[data-platform="ios"] *::after {
+    animation-duration: .01ms !important; animation-iteration-count: 1 !important;
+    transition-duration: .01ms !important; scroll-behavior: auto !important;
+  }
+}
+@media (orientation: landscape) {
+  .ios-tabbar { left: max(20%, env(safe-area-inset-left)); right: max(20%, env(safe-area-inset-right)); }
+}
+
+html[data-platform="ios"] .hpp-page { font-size: .875rem; }
+html[data-platform="ios"] .hpp-header { padding: calc(var(--sat, 0px) + 14px) 20px 18px; min-height: 0; }
+html[data-platform="ios"] .hpp-header h1 { font-size: 1.875rem; letter-spacing: -.035em; font-weight: 750; }
+html[data-platform="ios"] .hpp-header-tools { gap: 6px; }
+html[data-platform="ios"] .hpp-content { padding: 12px 20px calc(env(safe-area-inset-bottom) + 28px); }
+html[data-platform="ios"] .hpp-page button { min-height: 44px; border-radius: 14px; }
+html[data-platform="ios"] .hpp-page .hpp-media-card { min-height: auto; }
+html[data-platform="ios"] .hpp-provider-tabs { padding: 0 20px; gap: 24px; }
+html[data-platform="ios"] .hpp-category-icon { border-radius: 12px; }
+html[data-platform="ios"] .hpp-poster { border-radius: 16px; box-shadow: 0 4px 12px #0001; }
+html[data-platform="ios"] .hpp-plugin, html[data-platform="ios"] .hpp-import,
+html[data-platform="ios"] .hpp-page button.hpp-library-plugins { border-radius: 22px; border: 0; background: var(--p-s1); }
+html[data-platform="ios"] .hpp-plugin-icon { border-radius: 14px; }
+html[data-platform="ios"] .hpp-local-library { grid-template-columns: repeat(2,minmax(0,1fr)); }
+html[data-platform="ios"] .hpp-local-entry { padding: 0; }
+html[data-platform="ios"] .hpp-search-input { border-radius: 16px; }
+html[data-platform="ios"] .hpp-source-picker, html[data-platform="ios"] .hpp-page dialog,
+html[data-platform="ios"] .hpp-modal {
+  position: fixed; inset: auto 0 0; margin: 0; width: 100%; max-width: none;
+  max-height: calc(100dvh - env(safe-area-inset-top) - 12px);
+  padding: 24px 20px calc(env(safe-area-inset-bottom) + 24px);
+  border: 1px solid var(--p-glass-border); border-radius: 28px 28px 0 0;
+  background: var(--p-glass); color: var(--p-on);
+  -webkit-backdrop-filter: blur(28px); backdrop-filter: blur(28px);
+}
+html[data-platform="ios"] dialog::backdrop { background: #0006; }
+html[data-platform="ios"] .legacy-panel-heading button { min-height: 44px; }
+html[data-platform="ios"] .legacy-panel-body { padding: 8px 20px 24px; }
+html[data-platform="ios"] .legacy-settings h2 { font-size: .75rem; margin-top: 22px; }
+html[data-platform="ios"] .legacy-settings section { border-radius: 20px; }
+html[data-platform="ios"] .legacy-settings section>div { min-height: 64px; }
+html[data-platform="ios"] .hpp-header, html[data-platform="ios"] .legacy-settings { padding-left: env(safe-area-inset-left); padding-right: env(safe-area-inset-right); }
+
+/* rem sizing follows iOS Dynamic Type; compact captions retain a readable minimum. */
+html[data-platform="ios"] .text-\[8\.5px\] { font-size: 0.6875rem; }
+html[data-platform="ios"] .text-\[9px\] { font-size: 0.6875rem; }
+html[data-platform="ios"] .text-\[9\.5px\] { font-size: 0.6875rem; }
+html[data-platform="ios"] .text-\[10px\] { font-size: 0.6875rem; }
+html[data-platform="ios"] .text-\[10\.5px\] { font-size: 0.6875rem; }
+html[data-platform="ios"] .text-\[11px\] { font-size: 0.6875rem; }
+html[data-platform="ios"] .text-\[11\.5px\] { font-size: 0.71875rem; }
+html[data-platform="ios"] .text-\[12px\] { font-size: 0.75rem; }
+html[data-platform="ios"] .text-\[12\.5px\] { font-size: 0.78125rem; }
+html[data-platform="ios"] .text-\[13px\] { font-size: 0.8125rem; }
+html[data-platform="ios"] .text-\[13\.5px\] { font-size: 0.84375rem; }
+html[data-platform="ios"] .text-\[14px\] { font-size: 0.875rem; }
+html[data-platform="ios"] .text-\[15px\] { font-size: 0.9375rem; }
+html[data-platform="ios"] .text-\[15\.5px\] { font-size: 0.96875rem; }
+html[data-platform="ios"] .text-\[26px\] { font-size: 1.625rem; }
