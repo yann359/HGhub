@@ -1,7 +1,7 @@
 # HGhub iOS 定制版开发状态
 
 更新：2026-11-15（Asia/Shanghai）
-状态：本地核心回归通过，第二轮 macOS 已真实生成并校验未签名 IPA；正在构建最终 iOS 16.4 版本。
+状态：源码、自动化回归、真实 iOS Release 编译与最终 IPA 双重校验已完成；待个人签名后的 iPhone 真机验收。
 
 ## 目标
 保留插件视频播放器全部能力，提供 Apple 风格 iPhone UI，构建真实 ARM64 Release 未签名 IPA，仅供非商业学习与个人使用。
@@ -37,11 +37,31 @@
 - 中间产物：https://github.com/yann359/HGhub/actions/runs/43717838058/artifacts/14163682045（源码 9282462，最低 15.4；仅作构建证据，最终交付将以 16.4 版本替代）。
 - 完整云端日志：https://github.com/yann359/HGhub/actions/runs/43717838058/artifacts/14163552451。
 - iOS 清屏隐藏控制栏时保持视频边界不变的回归通过，避免画面跳动。
-- IPA 最终结构、Mach-O、Info.plist、图标资源/权限：等待最终版本重建与下载后二次校验。
+- 最终 macOS 构建 43718975540：全部成功；Xcode 16.4 / iOS SDK 18.5 / Rust 1.100.0 / Node 22.23.4 / pnpm 10.34.9。
+- 最终 IPA 已下载并在 Windows 再次通过结构校验；13 个 ZIP 条目，5,289,728 字节，真机 ARM64、Release、PIE、未加密、无签名与描述文件；Info.plist 与 Mach-O 均声明最低 iOS 16.4，图标/Assets.car 存在，ATS 无任意访问例外。
+- IPA 对应应用源码提交：88b472a65a671b17cd15d03f5a82157f8dca753f。其后提交仅补充交付文档，不改变应用代码。
+- SHA-256：150416507140c9f0c26157c9ed4c0ed1743c576fb718c9f5a67e18af206c0b19。
 - iPhone 真机、原生横屏、PiP、长时间内存：未验证，没有连接设备。
 
+## 最终产物与下载
+- 构建与完整在线日志：https://github.com/yann359/HGhub/actions/runs/43718975540
+- IPA / manifest / SHA256SUMS：https://github.com/yann359/HGhub/actions/runs/43718975540/artifacts/14163871595
+- 完整诊断日志与 xcresult：https://github.com/yann359/HGhub/actions/runs/43718975540/artifacts/14163004758
+- 预览 Release（含 IPA、校验记录、完整日志和本地回归证据）：https://github.com/yann359/HGhub/releases/tag/v1.0.0-ios-liquidglass-preview
+- IPA 直接下载：https://github.com/yann359/HGhub/releases/download/v1.0.0-ios-liquidglass-preview/HGhub-iOS-LiquidGlass-v1.0.0.ipa
+- Actions 产物保留 30 天（截至 2026-12-15）；Release 附件提供持续下载，仍需个人签名。
+- 本地交付目录：工作区 dist/ios；包含最终 IPA、云端及本地校验结果、日志 ZIP、浏览器回归报告/截图和源码归档。
+- 本地业务回归 25 组、界面回归 4 组，全部通过；测试不请求外部内容源。
+
+## 未解决问题与风险
+- 未连接真机，不能声明已实际安装成功；原生 HLS、系统横屏/退出全屏、PiP、文件选择器、安全区、动态字体、音频中断与连续 60 分钟内存需要真机验收。
+- 画中画由设备、系统和当前视频运行时能力决定；不支持时给出提示，不提供假按钮效果。没有启用后台音频权限。
+- 插件版基线为早期 0.0.1，第三方插件的接口实现、合法授权、网络条件及编解码能力影响可用性；未附带第三方源。
+- Vite 主包仍约 921KB，后续可单独评估拆包；本次优先维持播放器与插件稳定性。
+- Windows 编译/浏览器回归及 Android 视口回归已通过；没有执行 Android APK 构建或安卓真机测试。
+
 ## 下一步
-继续修复实际 Xcode 编译直到产物可校验；对最终源码重新运行工作流并下载实际 IPA。个人签名/安装、构建与真机清单见 docs/IOS_BUILD.md。
+使用个人 Apple 身份签名后，在 iPhone 按 docs/IOS_BUILD.md 清单验收；记录设备/系统/插件/编码格式，收集脱敏日志。完成真机验收后再考虑正式版标记与性能优化。
 
 ## 继续开发约定
 每次继续前先读本文件、根目录 PROJECT_STATUS.md、当前源码及 git status/log。不得将浏览器模拟、构建成功等同于 iPhone 真机通过。

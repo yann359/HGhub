@@ -16,6 +16,10 @@
 
 ## 在 GitHub Actions 构建
 
+本次实际成功运行：[43718975540](https://github.com/yann359/HGhub/actions/runs/43718975540)，使用 Xcode 16.4、iOS SDK 18.5，最终 IPA 已通过云端和下载后的本地结构校验。真机安装与专项行为尚未验证。
+
+直接获取本次产物：[预览 Release 下载页](https://github.com/yann359/HGhub/releases/tag/v1.0.0-ios-liquidglass-preview)。选择 `.ipa` 附件，日志、校验清单与完整源码也在附件中。此文件仍需个人签名。
+
 1. 打开仓库 **Actions → HGhub iOS Liquid Glass**，选择分支 `codex/ios-liquid-glass-plugin`，点击 **Run workflow**。该分支代码变更也会自动构建。
 2. 等待 macOS runner 完成 Rust 测试、iOS 初始化和 ARM64 Release 编译。
 3. 成功后在运行页面底部 **Artifacts** 下载 `HGhub-iOS-LiquidGlass-v1.0.0`。解压得到 `.ipa`、`ios-build-manifest.json` 和 `SHA256SUMS.txt`。Artifacts 会按工作流配置保留 30 天，下载需要登录 GitHub。
