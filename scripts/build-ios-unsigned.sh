@@ -14,7 +14,9 @@ export LIBCLANG_PATH="$(xcode-select -p)/Toolchains/XcodeDefault.xctoolchain/usr
 # No fake Team ID and no signing assets. tauri 2.10.1 has no ios --no-sign.
 # --open starts the Release options server used by the generated Rust build phase.
 IDENTIFIER="$(node -p "require('./src-tauri/tauri.ios.conf.json').identifier")"
-ADDR_FILE="$(node -p "require('os').tmpdir()")/$IDENTIFIER-server-addr"
+# Tauri keys the options server by the BASE identifier, before iOS overrides.
+BASE_IDENTIFIER="$(node -p "require('./src-tauri/tauri.conf.json').identifier")"
+ADDR_FILE="$(node -p "require('os').tmpdir()")/$BASE_IDENTIFIER-server-addr"
 rm -f "$ADDR_FILE"
 pnpm tauri ios build --open --ci --features custom-protocol -- --locked > artifacts/logs/tauri-session.log 2>&1 &
 SESSION_PID=$!

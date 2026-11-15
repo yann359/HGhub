@@ -24,7 +24,7 @@ interface Props {
 /** All requests keep the provider-owned HTTP transport, credentials and cancellation. */
 export default forwardRef<VideoHandle, Props>(function VideoSurface(props, forwarded) {
   const ref = useRef<HTMLVideoElement>(null), latest = useRef(props), hls = useRef<Hls | null>(null);
-  const wanted = useRef(props.autoPlay !== false), sourceEpoch = useRef(0);
+  const wanted = useRef(props.autoPlay !== false), sourceEpoch = useRef(0), systemPause = useRef(false);
   latest.current = props;
   const available = () => latest.current.active && (!document.hidden || !!ref.current && inPictureInPicture(ref.current));
   const log = (event: string, extra = "") => {
@@ -38,10 +38,12 @@ export default forwardRef<VideoHandle, Props>(function VideoSurface(props, forwa
     const epoch = sourceEpoch.current;
     if (hls.current?.levels.length && !hls.current.loadingEnabled) hls.current.startLoad(video.currentTime);
     void video.play().then(() => {
-      if (sourceEpoch.current !== epoch || !available()) video.pause();
+      if (sourceEpoch.current !== epoch) return;
+      if (!available()) video.pause();
     }).catch(error => {
       if (sourceEpoch.current !== epoch) return;
       log("play.rejected", error?.name || "unknown");
+      if (error?.name === "NotAllowedError") wanted.current = false;
       latest.current.onPause();
     });
   };
@@ -76,7 +78,7 @@ export default forwardRef<VideoHandle, Props>(function VideoSurface(props, forwa
     };
     const watchdog = () => {
       clearTimeout(loadTimer);
-      if (available() && wanted.current) loadTimer = window.setTimeout(fail, 30000);
+      if (available() && wanted.current) loadTimer = window.setTimeout(() => { if (available() && wanted.current) fail(); }, 30000);
     };
     const metadata = () => {
       if (!metadataApplied && initial.position > 0 && Number.isFinite(video.duration)) {
@@ -88,19 +90,20 @@ export default forwardRef<VideoHandle, Props>(function VideoSurface(props, forwa
     };
     const playing = () => {
       if (disposed || !available()) { video.pause(); return; }
+      systemPause.current = false;
       clearTimeout(loadTimer); recoveries = 0; activity(true); latest.current.onPlaying();
     };
     const paused = () => {
       if (disposed) return;
       clearTimeout(loadTimer); activity(false); latest.current.onTime(video.currentTime);
-      if (available() && !video.seeking) wanted.current = false;
+      if (available() && !systemPause.current && video.readyState >= 2 && !video.seeking) wanted.current = false;
       if (!video.ended) latest.current.onPause();
     };
     const visibility = () => {
-      if (!available()) { clearTimeout(loadTimer); video.pause(); hls.current?.stopLoad(); activity(false); }
+      if (!available()) { systemPause.current = true; clearTimeout(loadTimer); video.pause(); hls.current?.stopLoad(); activity(false); }
       else if (wanted.current) { play(); watchdog(); }
     };
-    const guard = () => { if (!available()) video.pause(); };
+    const guard = () => { if (!available()) video.pause(); else wanted.current = true; };
     video.muted = initial.muted; video.volume = initial.volume; video.playbackRate = initial.rate;
     video.addEventListener("loadedmetadata", metadata); video.addEventListener("error", fail);
     video.addEventListener("play", guard); video.addEventListener("playing", playing); video.addEventListener("pause", paused);
@@ -141,7 +144,7 @@ export default forwardRef<VideoHandle, Props>(function VideoSurface(props, forwa
   }, [props.media.sessionId]);
   useEffect(() => { const video = ref.current; if (video) { video.muted = props.muted; video.volume = props.volume; video.playbackRate = props.rate; } }, [props.muted, props.volume, props.rate]);
   useEffect(() => {
-    if (!props.active) { ref.current?.pause(); hls.current?.stopLoad(); }
+    if (!props.active) { systemPause.current = true; ref.current?.pause(); hls.current?.stopLoad(); }
     else if (wanted.current && ref.current?.readyState) play();
   }, [props.active]);
   const dimensions = () => {

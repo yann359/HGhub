@@ -124,7 +124,7 @@ export default function Feed({media, position, active=true, error="", onRetry, o
   const isLandscapeVideo = vsize.w > vsize.h && vsize.h > 0;
   /* 仅当「全屏 + 横屏视频 + 手机系统视口尚未横过来 (!vpLandscape)」时才用 CSS 旋转 90° 兜底；
      一旦系统屏幕已经横过来了 (vpLandscape === true)，不再叠加 CSS 旋转，彻底解决手机横置后视频反而竖过去的问题！ */
-  const rotated = !isDesktop && fs && isLandscapeVideo && !vpLandscape;
+  const rotated = platform !== "ios" && !isDesktop && fs && isLandscapeVideo && !vpLandscape;
 
   /* 借鉴 stclock1988/hghub-ios (PlayerView.swift keepPlayingThroughTransition)：
      iOS 在横竖屏几何旋转或全屏视图层级切换期间，系统底层 AVPlayer / WebKit 视频层可能被短暂挂起暂停。
@@ -158,8 +158,7 @@ export default function Feed({media, position, active=true, error="", onRetry, o
       const isLand = window.innerWidth > window.innerHeight;
       setVpLandscape((prev) => {
         if (prev !== isLand && active) {
-          setFs(isLand);
-          keepPlayingThroughTransition();
+          if (platform !== "ios") { setFs(isLand); keepPlayingThroughTransition(); }
         }
         return isLand;
       });
@@ -172,7 +171,7 @@ export default function Feed({media, position, active=true, error="", onRetry, o
     };
   }, [isDesktop, active, setFs, keepPlayingThroughTransition]);
 
-  /* 进入 / 退出全屏：对横屏视频直接调用原生屏幕方向切换，让手机系统界面真正横过来 */
+  /* iOS uses system video fullscreen; Android keeps the existing immersive presentation. */
   const enterFs = useCallback(() => {
     if (platform === "ios") {
       const video = videoRef.current?.el(), container = boxRef.current;
@@ -197,14 +196,6 @@ export default function Feed({media, position, active=true, error="", onRetry, o
 
     try { screen.orientation?.unlock?.(); } catch { /* ignore */ }
   }, [setClean, setFs, keepPlayingThroughTransition]);
-
-  /* 全屏状态下若视频宽高刚加载出来且为横屏，自动补发一次横屏指令 */
-  useEffect(() => {
-    if (!isDesktop && fs && isLandscapeVideo) {
-
-    }
-  }, [isDesktop, fs, isLandscapeVideo]);
-
 
   const go=(delta:number)=>{ if(!active || controlsLocked) return; delta>0 ? onNext?.() : onPrevious?.(); };
   const onTimeTick=(t:number)=>{ if(!barScrub.current && gesture.current?.mode!=="scrub")setTime(t); onPosition(t,videoRef.current?.el()?.duration); };
