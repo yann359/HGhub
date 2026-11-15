@@ -27,7 +27,11 @@ def validate(path, bundle_id, version):
         assert info.get("CFBundlePackageType") == "APPL", "Not an application bundle"
         assert info.get("DTPlatformName") == "iphoneos", "Not built for physical iPhone"
         assert tuple(map(int, info["MinimumOSVersion"].split("."))) >= (16, 4), "Deployment target mismatch"
-        assert not info.get("NSAppTransportSecurity", {}).get("NSAllowsArbitraryLoads"), "Broad ATS exception"
+        ats = info.get("NSAppTransportSecurity", {})
+        assert not ats.get("NSAllowsArbitraryLoads"), "Broad ATS exception"
+        assert ats.get("NSAllowsLocalNetworking"), "Loopback media transport declaration missing"
+        assert info.get("CFBundleIcons"), "iPhone application icon metadata missing"
+        assert any(n.startswith(root) and n.endswith("Assets.car") for n in names), "Compiled application resources missing"
         for key in ["UISupportedInterfaceOrientations", "UISupportedInterfaceOrientations~ipad"]:
             assert {"UIInterfaceOrientationPortrait", "UIInterfaceOrientationLandscapeLeft", "UIInterfaceOrientationLandscapeRight"} <= set(info.get(key, [])), "Missing orientations"
         executable = root + info["CFBundleExecutable"]
@@ -37,17 +41,20 @@ def validate(path, bundle_id, version):
         magic, cpu, _, filetype, commands, _, flags, _ = struct.unpack_from("<8I", binary)
         assert magic == 0xFEEDFACF and cpu == 0x0100000C and filetype == 2, "Expected ARM64 Mach-O executable"
         assert flags & 0x200000, "Release executable must use PIE"
-        offset, device_build, encrypted = 32, False, False
+        offset, device_build, encrypted, executable_minimum, sdk_version = 32, False, False, None, None
         for _ in range(commands):
             command, size = struct.unpack_from("<II", binary, offset)
             assert size >= 8 and offset + size <= len(binary), "Invalid Mach-O commands"
             if command == 0x32:  # LC_BUILD_VERSION
-                platform = struct.unpack_from("<I", binary, offset + 8)[0]
+                platform, minimum, sdk_version = struct.unpack_from("<III", binary, offset + 8)
+                executable_minimum = (minimum >> 16, (minimum >> 8) & 255, minimum & 255)
                 device_build = platform == 2
             if command == 0x2C:  # LC_ENCRYPTION_INFO_64
                 encrypted = struct.unpack_from("<I", binary, offset + 16)[0] != 0
             offset += size
         assert device_build, "Mach-O is not built for device iOS"
+        declared_minimum = tuple(map(int, info["MinimumOSVersion"].split(".")))
+        assert executable_minimum <= declared_minimum + (0,) * (3 - len(declared_minimum)), "Executable needs a newer OS than Info.plist declares"
         assert not encrypted, "Encrypted App Store executable cannot be personally re-signed"
         assert b"localhost:1420" not in binary and b"127.0.0.1:1420" not in binary, "Development URL embedded"
         assert not any(n.endswith(".dSYM/") for n in names), "Unexpected debug symbols in payload"
@@ -58,6 +65,8 @@ def validate(path, bundle_id, version):
         result = {"bundleId": bundle_id, "version": version, "minimumOS": info["MinimumOSVersion"],
                   "executable": info["CFBundleExecutable"], "architecture": "arm64", "platform": "iphoneos",
                   "configuration": "release", "encrypted": False, "signature": "unsigned",
+                  "executableMinimumOS": ".".join(map(str, executable_minimum)),
+                  "sdk": ".".join(map(str, (sdk_version >> 16, (sdk_version >> 8) & 255, sdk_version & 255))),
                   "files": len(names), "bytes": Path(path).stat().st_size,
                   "sha256": digest,
                   "deviceTested": False, "checks": "ZIP CRC, Payload, plist, executable mode, Mach-O, device platform, ATS, orientations, dev URL, encryption, signature"}
