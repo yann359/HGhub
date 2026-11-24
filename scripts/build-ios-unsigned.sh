@@ -38,7 +38,6 @@ if [[ "${HGHUB_IOS_SIMULATOR:-0}" == 1 ]]; then
     ARCHS=arm64 ONLY_ACTIVE_ARCH=NO \
     CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" DEVELOPMENT_TEAM="" \
     | tee artifacts/logs/xcodebuild-simulator.log
-  bash scripts/smoke-ios-simulator.sh "$ROOT/build_output/Build/Products/release-iphonesimulator/HGhub.app" "$IDENTIFIER"
   exit
 fi
 xcodebuild build \

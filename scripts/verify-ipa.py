@@ -63,10 +63,11 @@ def validate(path, bundle_id, version, bundled_dir=None):
         bundled = []
         if bundled_dir:
             manifest_file = bundled_dir / "manifest.json"
-            manifest_bytes = manifest_file.read_bytes()
+            # Git normalizes these sources to LF on the macOS build runner.
+            manifest_bytes = manifest_file.read_text(encoding='utf-8').encode('utf-8')
             assert manifest_bytes in binary, "Bundled plugin manifest is missing from the executable"
             for plugin in json.loads(manifest_bytes)["plugins"]:
-                code = (bundled_dir / plugin["url"]).read_bytes()
+                code = (bundled_dir / plugin["url"]).read_text(encoding="utf-8").encode("utf-8")
                 assert code in binary, f"Bundled plugin missing: {plugin['id']}"
                 bundled.append({"id": plugin["id"], "version": plugin["version"], "sha256": hashlib.sha256(code).hexdigest()})
         with open(path, "rb") as source:

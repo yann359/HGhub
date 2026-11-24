@@ -3,7 +3,13 @@ set -euo pipefail
 APP="${1:?Pass the release simulator app bundle}"
 IDENTIFIER="${2:?Pass the simulator bundle identifier}"
 LOG=artifacts/logs
-xcrun simctl list devices available -j > "$LOG/simulator-devices.json"
+simctl() {
+  python3 - "$@" <<'PY'
+import os, subprocess, sys
+subprocess.run(["xcrun", "simctl", *sys.argv[1:]], check=True, timeout=int(os.environ.get("HGHUB_SIM_WAIT", "30")))
+PY
+}
+simctl list devices available -j > "$LOG/simulator-devices.json"
 CHOICE="$(python3 - "$LOG/simulator-devices.json" <<'PY'
 import json, re, sys
 data = json.load(open(sys.argv[1], encoding="utf-8"))
@@ -21,15 +27,14 @@ print(udid)
 print(f"{name} / iOS {'.'.join(map(str, version))}", file=sys.stderr)
 PY
 )"
-trap 'xcrun simctl shutdown "$CHOICE" || true' EXIT
-python3 - "$CHOICE" <<'PY'
-import subprocess, sys
-subprocess.run(["xcrun", "simctl", "bootstatus", sys.argv[1], "-b"], check=True, timeout=300)
-PY
+trap 'simctl shutdown "$CHOICE" || true' EXIT
+echo "Starting simulator"
+simctl boot "$CHOICE"
+HGHUB_SIM_WAIT=150 simctl bootstatus "$CHOICE" -b
 codesign --force --sign - "$APP"
-xcrun simctl install "$CHOICE" "$APP"
-xcrun simctl launch "$CHOICE" "$IDENTIFIER" | tee "$LOG/simulator-launch.txt"
-DATA="$(xcrun simctl get_app_container "$CHOICE" "$IDENTIFIER" data)"
+simctl install "$CHOICE" "$APP"
+simctl launch "$CHOICE" "$IDENTIFIER" | tee "$LOG/simulator-launch.txt"
+DATA="$(simctl get_app_container "$CHOICE" "$IDENTIFIER" data)"
 verify_index() {
   python3 - "$DATA" <<'PY'
 import pathlib, sys
@@ -47,7 +52,7 @@ sys.exit(1)
 PY
 }
 capture() {
-  xcrun simctl io "$CHOICE" screenshot "$LOG/simulator-home.png" || true
+  simctl io "$CHOICE" screenshot "$LOG/simulator-home.png" || true
   find "$DATA" -name debug.log -exec cp {} "$LOG/simulator-debug.log" \; || true
 }
 for ((attempt=0; attempt<30; attempt++)); do
@@ -56,8 +61,8 @@ for ((attempt=0; attempt<30; attempt++)); do
 done
 capture
 test -s "$LOG/simulator-data.txt"
-xcrun simctl terminate "$CHOICE" "$IDENTIFIER"
-LAUNCH="$(xcrun simctl launch "$CHOICE" "$IDENTIFIER")"
+simctl terminate "$CHOICE" "$IDENTIFIER"
+LAUNCH="$(simctl launch "$CHOICE" "$IDENTIFIER")"
 printf "%s\n" "$LAUNCH" | tee -a "$LOG/simulator-launch.txt"
 PID="${LAUNCH##*: }"
 for ((attempt=0; attempt<24; attempt++)); do

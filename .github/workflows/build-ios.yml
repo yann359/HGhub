@@ -114,8 +114,14 @@ jobs:
         run: pnpm install --frozen-lockfile
       - name: Initialize iOS project
         run: pnpm tauri ios init --ci
-      - name: Build and launch in iOS Simulator
+      - name: Compile for iOS Simulator
+        timeout-minutes: 12
         run: bash scripts/build-ios-unsigned.sh 1.1.0
+      - name: Check launch and playback on iOS Simulator
+        timeout-minutes: 7
+        run: |
+          bundle_id="$(node -p "require('./src-tauri/tauri.ios.conf.json').identifier")"
+          bash scripts/smoke-ios-simulator.sh "$PWD/build_output/Build/Products/release-iphonesimulator/HGhub.app" "$bundle_id"
       - name: Upload simulator diagnostics
         if: always()
         uses: actions/upload-artifact@v4
