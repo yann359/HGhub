@@ -1,6 +1,7 @@
 name: Plugin player checks
 on:
-  workflow_dispatch:
+  push:
+    tags: ["v*"]
 permissions:
   contents: read
 jobs:

@@ -1,10 +1,12 @@
 name: Release
 
-# 打 tag（v1.2.3）即自动出包并发布 Release；也可以在 Actions 页手动跑一次只出产物。
+# 仅推送版本 tag（如 v1.2.3）时构建所有平台，并统一发布到该 tag 的 Release。
 on:
   push:
     tags: ["v*"]
-  workflow_dispatch:
+
+permissions:
+  contents: read
 
 concurrency:
   group: release-${{ github.ref }}
@@ -25,11 +27,7 @@ jobs:
         id: ver
         shell: bash
         run: |
-          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
-            V="${GITHUB_REF_NAME#v}"
-          else
-            V="$(node -p "require('./src-tauri/tauri.conf.json').version")"
-          fi
+          V="${GITHUB_REF_NAME#v}"
           echo "version=$V" >> "$GITHUB_OUTPUT"
           node -e "const fs=require('fs');for(const p of ['src-tauri/tauri.conf.json','package.json']){const j=JSON.parse(fs.readFileSync(p));j.version=process.argv[1];fs.writeFileSync(p,JSON.stringify(j,null,2)+'\n')}" "$V"
 
@@ -82,11 +80,7 @@ jobs:
         id: ver
         shell: bash
         run: |
-          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
-            V="${GITHUB_REF_NAME#v}"
-          else
-            V="$(node -p "require('./src-tauri/tauri.conf.json').version")"
-          fi
+          V="${GITHUB_REF_NAME#v}"
           echo "version=$V" >> "$GITHUB_OUTPUT"
           node -e "const fs=require('fs');for(const p of ['src-tauri/tauri.conf.json','package.json']){const j=JSON.parse(fs.readFileSync(p));j.version=process.argv[1];fs.writeFileSync(p,JSON.stringify(j,null,2)+'\n')}" "$V"
 
@@ -170,10 +164,152 @@ jobs:
           path: artifacts/*
           if-no-files-found: error
 
-  # ================= macOS：Universal（Apple Silicon + Intel）dmg =================
+  # ================= macOS：三种架构的 DMG + APP =================
   macos:
-    name: macOS (universal dmg)
+    name: macOS (${{ matrix.name }})
     runs-on: macos-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: aarch64-apple-darwin
+            name: Apple Silicon (arm64)
+            arch: arm64
+          - target: x86_64-apple-darwin
+            name: Intel (x64)
+            arch: x64
+          - target: universal-apple-darwin
+            name: Universal (通用版)
+            arch: universal
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 对齐版本号
+        id: ver
+        shell: bash
+        run: |
+          V="${GITHUB_REF_NAME#v}"
+          echo "version=$V" >> "$GITHUB_OUTPUT"
+          node -e "const fs=require('fs');for(const p of ['src-tauri/tauri.conf.json','package.json']){const j=JSON.parse(fs.readFileSync(p));j.version=process.argv[1];fs.writeFileSync(p,JSON.stringify(j,null,2)+'\n')}" "$V"
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+          key: macos-${{ matrix.target }}
+
+      - name: 安装前端依赖
+        run: pnpm install --frozen-lockfile
+
+      - name: 构建 macOS 应用 (DMG + APP)
+        run: |
+          pnpm tauri build --config src-tauri/tauri.macos.conf.json --target ${{ matrix.target }}
+
+      - name: 整理构建产物
+        shell: bash
+        run: |
+          set -euo pipefail
+          V="${{ steps.ver.outputs.version }}"
+          BUNDLE="src-tauri/target/${{ matrix.target }}/release/bundle"
+          mkdir -p artifacts
+          cp "$BUNDLE"/dmg/*.dmg "artifacts/HGhub_${V}_${{ matrix.arch }}.dmg"
+          tar -czf "artifacts/HGhub_${V}_${{ matrix.arch }}.app.tar.gz" -C "$BUNDLE/macos" "HGhub.app"
+          ls -lh artifacts/
+
+      - name: 上传构建产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-${{ matrix.arch }}
+          path: artifacts/*
+          if-no-files-found: error
+
+  # ================= iOS：未签名 IPA =================
+  ios:
+    name: iOS Build (IPA)
+    runs-on: macos-latest
+    env:
+      APPLE_DEVELOPMENT_TEAM: "ABCDE12345"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 对齐版本号
+        id: ver
+        shell: bash
+        run: |
+          V="${GITHUB_REF_NAME#v}"
+          echo "version=$V" >> "$GITHUB_OUTPUT"
+          node -e "const fs=require('fs');for(const p of ['src-tauri/tauri.conf.json','package.json']){const j=JSON.parse(fs.readFileSync(p));j.version=process.argv[1];fs.writeFileSync(p,JSON.stringify(j,null,2)+'\n')}" "$V"
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-ios,aarch64-apple-ios-sim
+
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+          key: ios-build
+
+      - name: 安装依赖
+        run: pnpm install --frozen-lockfile
+
+      - name: 初始化 iOS Xcode 工程
+        run: |
+          pnpm tauri ios init --ci
+          # 确保 iOS Info.plist（含 ~iphone / ~ipad 变体）支持横竖屏切换及 ATS
+          for plist in $(find src-tauri/gen/apple -name "Info.plist" 2>/dev/null); do
+            for key in "UISupportedInterfaceOrientations" "UISupportedInterfaceOrientations~iphone" "UISupportedInterfaceOrientations~ipad"; do
+              /usr/libexec/PlistBuddy -c "Delete :${key}" "$plist" 2>/dev/null || true
+              /usr/libexec/PlistBuddy -c "Add :${key} array" "$plist"
+              /usr/libexec/PlistBuddy -c "Add :${key}:0 string UIInterfaceOrientationPortrait" "$plist"
+              /usr/libexec/PlistBuddy -c "Add :${key}:1 string UIInterfaceOrientationLandscapeLeft" "$plist"
+              /usr/libexec/PlistBuddy -c "Add :${key}:2 string UIInterfaceOrientationLandscapeRight" "$plist"
+            done
+            /usr/libexec/PlistBuddy -c "Delete :NSAppTransportSecurity" "$plist" 2>/dev/null || true
+            /usr/libexec/PlistBuddy -c "Add :NSAppTransportSecurity dict" "$plist"
+            /usr/libexec/PlistBuddy -c "Add :NSAppTransportSecurity:NSAllowsArbitraryLoads bool true" "$plist"
+          done
+        env:
+          APPLE_DEVELOPMENT_TEAM: "ABCDE12345"
+
+      - name: 构建 iOS 应用与打包 IPA
+        shell: bash
+        env:
+          APP_VERSION: ${{ steps.ver.outputs.version }}
+        run: bash scripts/build-ios-unsigned.sh "$APP_VERSION"
+
+      - name: 上传 IPA 产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: ios
+          path: artifacts/*
+          if-no-files-found: error
+
+  # ================= Linux：DEB + AppImage =================
+  linux:
+    name: Linux (deb + appimage)
+    runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
 
@@ -181,13 +317,18 @@ jobs:
         id: ver
         shell: bash
         run: |
-          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
-            V="${GITHUB_REF_NAME#v}"
-          else
-            V="$(node -p "require('./src-tauri/tauri.conf.json').version")"
-          fi
+          V="${GITHUB_REF_NAME#v}"
           echo "version=$V" >> "$GITHUB_OUTPUT"
           node -e "const fs=require('fs');for(const p of ['src-tauri/tauri.conf.json','package.json']){const j=JSON.parse(fs.readFileSync(p));j.version=process.argv[1];fs.writeFileSync(p,JSON.stringify(j,null,2)+'\n')}" "$V"
+
+      - name: 安装系统依赖 (Tauri 2 / WebKit2GTK-4.1)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev libgtk-3-dev libsoup-3.0-dev librsvg2-dev \
+            build-essential pkg-config libssl-dev patchelf \
+            gstreamer1.0-plugins-base gstreamer1.0-plugins-good \
+            gstreamer1.0-plugins-bad gstreamer1.0-plugins-ugly gstreamer1.0-libav
 
       - uses: pnpm/action-setup@v4
         with:
@@ -197,38 +338,35 @@ jobs:
           node-version: 22
           cache: pnpm
       - uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: aarch64-apple-darwin,x86_64-apple-darwin
       - uses: swatinem/rust-cache@v2
         with:
           workspaces: src-tauri -> target
-          key: macos
 
-      - run: pnpm install --frozen-lockfile
+      - name: 安装依赖
+        run: pnpm install --frozen-lockfile
 
-      # 打包目标（app + dmg）取自 src-tauri/tauri.macos.conf.json；未配置开发者证书，产物为 ad-hoc 签名
-      - name: 构建（Universal dmg）
-        run: pnpm tauri build --target universal-apple-darwin
+      - name: 构建 (deb + appimage)
+        run: pnpm tauri build --bundles deb appimage
 
       - name: 收集产物
-        shell: bash
         run: |
           set -euo pipefail
           mkdir -p artifacts
-          cp src-tauri/target/universal-apple-darwin/release/bundle/dmg/*.dmg \
-             "artifacts/HGhub_${{ steps.ver.outputs.version }}_universal.dmg"
-          ls -lh artifacts
+          cp src-tauri/target/release/bundle/deb/*.deb artifacts/
+          cp src-tauri/target/release/bundle/appimage/*.AppImage artifacts/
+          ls -la artifacts
 
-      - uses: actions/upload-artifact@v4
+      - name: 上传产物
+        uses: actions/upload-artifact@v4
         with:
-          name: macos
+          name: linux
           path: artifacts/*
           if-no-files-found: error
 
   # ================= 发布 =================
   release:
     name: Publish GitHub Release
-    needs: [windows, android, macos]
+    needs: [windows, android, macos, ios, linux]
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     permissions:
@@ -244,6 +382,25 @@ jobs:
 
       - uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ github.ref_name }}
+          name: HGhub ${{ github.ref_name }}
+          body: |
+            ## 初期版本说明
+            HGhub 目前处于初期开发阶段，功能和插件接口仍在完善，使用过程中可能遇到问题，欢迎反馈。
+
+            **iOS、macOS 安装包尚未验证可用性。提供构建产物仅供尝试，不代表已完成安装、启动或播放验证。**
+
+            ## 下载说明
+            - Windows：安装版 `.exe` 或便携版 `_portable.zip`。
+            - Android：根据设备架构选择签名 `.apk`。
+            - macOS（可用性未验证）：选择 `arm64`、`x64` 或 `universal` 的 `.dmg` / `.app.tar.gz`。
+            - iOS（可用性未验证）：`_ios.ipa` 为未签名包，需要通过 TrollStore 或自行签名安装。
+            - Linux：`.deb` 或 `.AppImage`。
+
+            macOS 构建未经过 Apple 开发者证书签名及公证；若系统拦截，请确认来源后执行：
+            ```bash
+            sudo xattr -rd com.apple.quarantine /Applications/HGhub.app
+            ```
           files: artifacts/*
           generate_release_notes: true
           fail_on_unmatched_files: true

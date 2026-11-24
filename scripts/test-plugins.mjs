@@ -16,6 +16,7 @@ import { testPluginFeed } from "./test-plugin-feed.mjs";
 import { testPluginSourceSwitch } from "./test-plugin-source-switch.mjs";
 import { testPluginBrowsing } from "./test-plugin-browsing.mjs";
 import { testResolverPreferences } from "./test-plugin-resolver-preferences.mjs";
+import { testWatchExperience } from "./test-watch-experience.mjs";
 import { testFrontend } from "./test-frontend.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -87,9 +88,11 @@ try {
   const errors = []; page.on("pageerror", e => errors.push(e.message));
   await page.route("**/__hpp_test_ipc", async route => { const response = await dispatch(JSON.parse(route.request().postData())); await route.fulfill({ contentType: "application/json", body: JSON.stringify(response) }); });
   await page.route("**/*", route => { const url = route.request().url(); if (url.includes("/__hpp_test_ipc") || new URL(url).hostname === "127.0.0.1") return route.fallback(); report.external.push(url); return route.abort(); });
-  if (!process.argv.includes("--frontend")) await page.addInitScript(() => { if (!localStorage.getItem("hpp.preferences")) localStorage.setItem("hpp.preferences", JSON.stringify({ homeMode: "multiple", homeIds: [], autoNext: false })); });
+  if (!process.argv.includes("--frontend") && !process.argv.includes("--experience")) await page.addInitScript(() => { if (!localStorage.getItem("hpp.preferences")) localStorage.setItem("hpp.preferences", JSON.stringify({ homeMode: "multiple", homeIds: [], autoNext: false })); });
   await page.goto(`${ui}tests/plugins.html`);
-  if (process.argv.includes("--frontend")) {
+  if (process.argv.includes("--experience")) {
+    await testWatchExperience({ page, browser, dispatch, base, ui, root, output, report });
+  } else if (process.argv.includes("--frontend")) {
     await testFrontend({ page, browser, dispatch, base, ui, root, output, report });
   } else if (process.argv.includes("--browsing")) {
     await testPluginBrowsing({ page, dispatch, root, output, report, rail: page.getByRole("navigation", {name:"主导航"}) });
@@ -103,9 +106,9 @@ try {
   const code = (await readFile(join(root, "tests/fixtures/plugin-local.js"), "utf8")).replaceAll("__FIXTURE_BASE__", base);
   await page.getByRole("textbox", { name: "插件代码" }).fill(code); await page.getByRole("button", { name: "导入代码", exact: true }).click();
   await installedTab(page);
-  await page.getByText("已就绪", { exact: true }).waitFor(); report.passed.push("Import evaluates the module, discovers capabilities, initializes endpoint and persists installation");
+  await page.getByText("已就绪", { exact: true }).waitFor({ state: "attached" }); report.passed.push("Import evaluates the module, discovers capabilities, initializes endpoint and persists installation");
   await page.screenshot({ path: join(output, "management-dark.png") });
-  await page.getByRole("button", { name: "设置与日志", exact: true }).click();
+  await page.getByRole("button", { name: /查看 .* 的设置与日志/ }).click();
   await page.getByRole("button", { name: "探测站点线路", exact: true }).click();
   await page.getByText(/本机测试线路 · 可达/).waitFor();
   await page.getByRole("button", { name: "刷新站点线路", exact: true }).click();
@@ -178,8 +181,8 @@ try {
   assert((await dispatch({ action:"remove", params:{id:"fixture.selection-resolver"} })).ok);
   await page.evaluate(() => window.dispatchEvent(new Event("hpp.changed")));
   await page.getByRole("textbox", { name: "搜索所有插件" }).fill("fail"); await page.locator(".hpp-search").getByRole("button", { name: "搜索", exact: true }).click(); await page.getByRole("alert").filter({ hasText: "虚构源暂时不可用" }).waitFor();
-  await page.getByRole("button", { name: "插件中心", exact: true }).click(); await page.getByRole("button", { name: "停用", exact: true }).click(); await page.getByText("已停用", { exact: true }).waitFor(); await page.getByRole("button", { name: "启用", exact: true }).click(); await page.getByText("已就绪", { exact: true }).waitFor();
-  await page.reload(); await page.getByRole("button", { name: "插件中心", exact: true }).click(); await page.getByText("已就绪", { exact: true }).waitFor();
+  await page.getByRole("button", { name: "插件中心", exact: true }).click(); await page.getByRole("switch", { name: /^启用 / }).click(); await page.getByText("已停用", { exact: true }).waitFor({ state: "attached" }); await page.getByRole("switch", { name: /^启用 / }).click(); await page.getByText("已就绪", { exact: true }).waitFor({ state: "attached" });
+  await page.reload(); await page.getByRole("button", { name: "插件中心", exact: true }).click(); await page.getByText("已就绪", { exact: true }).waitFor({ state: "attached" });
   const preference = await page.evaluate(() => JSON.parse(localStorage.getItem("hpp.playback.servers"))[JSON.stringify(["source", "fixture.local"])]);
   assert.equal(preference, "source-backup");
   report.passed.push("Source streams and playback servers can be selected while preserving the current position, and stage-scoped server choices persist across episodes and reload");
@@ -274,9 +277,10 @@ try {
   await page.getByRole("textbox", { name: "插件代码" }).fill(formCode);
   await page.getByRole("button", { name: "导入代码", exact: true }).click();
   await installedTab(page);
-  const formPlugin = page.locator("article.hpp-plugin").filter({ has: page.getByRole("heading", { name: "虚构账号与表单" }) });
-  await formPlugin.getByText("已就绪", { exact: true }).waitFor();
-  await formPlugin.getByRole("button", { name: "设置与日志", exact: true }).click();
+  const formCard = page.locator("article.hpp-plugin").filter({ has: page.getByRole("heading", { name: "虚构账号与表单" }) });
+  const formPlugin = page.locator(".refined-plugin-detail");
+  await formCard.waitFor();
+  await formCard.getByRole("button", { name: /设置与日志/ }).click();
   await formPlugin.getByRole("button", { name: "设置虚构别名", exact: true }).click();
   await formPlugin.getByLabel("别名", { exact: true }).fill("未登录时输入");
   await formPlugin.getByRole("button", { name: "提交", exact: true }).click();
@@ -318,7 +322,7 @@ try {
   // Both account session and actions survive a page reload; raw credentials do not.
   await page.reload();
   await page.getByRole("button", { name: "插件中心", exact: true }).click();
-  await formPlugin.getByRole("button", { name: "设置与日志", exact: true }).click();
+  await formCard.getByRole("button", { name: /设置与日志/ }).click();
   await formPlugin.getByText("虚构观众", { exact: true }).waitFor();
   const formStorage = await readFile(join(data, "fixture.forms", "storage.json"), "utf8");
   assert(!formStorage.includes("synthetic-password"));
@@ -358,7 +362,7 @@ try {
   await page.getByRole("button", { name: "导入代码", exact: true }).click();
   await installedTab(page);
   const resolverPlugin = page.locator("article.hpp-plugin").filter({ has: page.getByRole("heading", { name: "虚构账号解析器" }) });
-  await resolverPlugin.getByText("已就绪", { exact: true }).waitFor();
+  await resolverPlugin.getByText("已就绪", { exact: true }).waitFor({ state: "attached" });
   const updatedSource = await dispatch({ action: "import", params: { code: formCode.replace('format: "progressive"', 'kind: "page"') } });
   assert(updatedSource.ok);
   await page.getByRole("button", { name: "搜索", exact: true }).first().click();
@@ -369,8 +373,8 @@ try {
   });
   assert.deepEqual(resolverFailure, { code: "AUTH_EXPIRED", pluginId: "fixture.account-resolver" });
   await page.getByRole("button", { name: "前往插件登录", exact: true }).click();
-  await resolverPlugin.getByRole("button", { name: "解析器虚构登录", exact: true }).click();
-  await resolverPlugin.getByText("虚构解析器用户", { exact: true }).waitFor();
+  await page.locator(".refined-plugin-detail").getByRole("button", { name: "解析器虚构登录", exact: true }).click();
+  await page.locator(".refined-plugin-detail").getByText("虚构解析器用户", { exact: true }).waitFor();
   await page.getByRole("button", { name: "搜索", exact: true }).first().click();
   assert.equal(await page.getByRole("button", { name: "前往插件登录", exact: true }).count(), 0);
   report.passed.push("Chained resolver auth failure uses host-owned provider identity, ignores spoofed details, opens the resolver login panel and clears the login prompt after success");
@@ -425,8 +429,9 @@ try {
   await page.getByRole("button", { name: "导入所选插件（1）", exact: true }).click();
   const distributed = page.locator("article.hpp-plugin").filter({ has: page.getByRole("heading", { name: /^分发虚构影院/ }) });
   await installedTab(page);
-  await distributed.getByText("已停用", { exact: true }).waitFor();
-  await distributed.getByText(/本地插件集 · /).waitFor();
+  await distributed.getByText("已停用", { exact: true }).waitFor({ state: "attached" });
+  await distributed.getByRole("button", { name: /设置与日志/ }).click();
+  await page.locator(".plugin-overview").getByText("本地插件集", { exact: true }).waitFor();
   await importTab(page);
   await page.getByRole("checkbox", { name: "仅安装，暂不启用", exact: true }).uncheck();
   const remoteList = version => JSON.stringify({ name:"远程插件集", plugins:[
@@ -446,30 +451,31 @@ try {
   await page.getByRole("button", { name: "导入所选插件（2）", exact: true }).click();
   await page.getByLabel("插件导入结果").getByText(/文件的 id 或 version 与列表不一致/).waitFor();
   await installedTab(page);
-  await distributed.getByText("已就绪", { exact: true }).waitFor();
+  await distributed.getByText("已就绪", { exact: true }).waitFor({ state: "attached" });
   assert.equal(distributionRequests.some(r => r.path.endsWith("/missing")), false);
   distributionFiles.set("/distribution/set/list", remoteList("1.1.0")); distributionFiles.set("/distribution/set/source", distributionCode("1.1.0", true));
   await importTab(page);
   await page.getByRole("button", { name: "检查插件更新", exact: true }).click();
   await page.getByRole("button", { name: "安装所选更新（1）", exact: true }).waitFor();
   await installedTab(page);
-  await distributed.getByText("fixture.distributed · v1.0.0", { exact: true }).waitFor();
+  await distributed.getByText("v1.0.0 · 内容源", { exact: true }).waitFor();
   await importTab(page);
   await page.getByRole("button", { name: "安装所选更新（1）", exact: true }).click();
   await installedTab(page);
-  await distributed.getByText("运行失败", { exact: true }).waitFor();
-  await distributed.getByRole("button", { name: "恢复上一可用版本", exact: true }).click();
+  await distributed.getByText("运行失败", { exact: true }).waitFor({ state: "attached" });
+  await distributed.getByRole("button", { name: /设置与日志/ }).click();
+  await page.locator(".refined-plugin-detail").getByRole("button", { name: "恢复上一可用版本", exact: true }).click();
   await installedTab(page);
-  await distributed.getByText("已就绪", { exact: true }).waitFor();
-  await distributed.getByText("fixture.distributed · v1.0.0", { exact: true }).waitFor();
+  await distributed.getByText("已就绪", { exact: true }).waitFor({ state: "attached" });
+  await distributed.getByText("v1.0.0 · 内容源", { exact: true }).waitFor();
   distributionFiles.set("/distribution/set/list", remoteList("1.2.0")); distributionFiles.set("/distribution/set/source", distributionCode("1.2.0"));
   await importTab(page);
   await page.getByRole("button", { name: "检查插件更新", exact: true }).click();
   await page.getByRole("button", { name: "安装所选更新（1）", exact: true }).click();
   await installedTab(page);
-  await distributed.getByText("fixture.distributed · v1.2.0", { exact: true }).waitFor();
+  await distributed.getByText("v1.2.0 · 内容源", { exact: true }).waitFor();
   await installedTab(page);
-  await distributed.getByText("已就绪", { exact: true }).waitFor();
+  await distributed.getByText("已就绪", { exact: true }).waitFor({ state: "attached" });
   await rail.getByRole("button", { name: "设置", exact: true }).click();
   for (const name of ["启动时自动检查插件更新", "自动安装插件更新"]) {
     const toggle = page.getByRole("button", { name, exact: true });

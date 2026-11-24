@@ -115,6 +115,11 @@ button { cursor: pointer; font-family: inherit; }
 .no-bar { scrollbar-width: none; }
 .no-bar::-webkit-scrollbar { display: none; }
 
+/* Windows keeps scrolling available without visible tracks, including nested panels. */
+.plat-windows.win-root, .plat-windows.win-root * { scrollbar-width: none; }
+.plat-windows.win-root::-webkit-scrollbar,
+.plat-windows.win-root *::-webkit-scrollbar { display: none; width: 0; height: 0; }
+
 /* ——— 层级阴影（无线条分割） ——— */
 .elev-1 { box-shadow: 0 1px 2px rgba(0,0,0,.16), 0 4px 12px rgba(0,0,0,.1); }
 .elev-2 { box-shadow: 0 2px 6px rgba(0,0,0,.16), 0 10px 24px rgba(0,0,0,.12); }
@@ -491,19 +496,6 @@ input[type="range"].hg-range::-webkit-slider-thumb { -webkit-appearance: none; w
   inset: 0;
   width: 100vw; height: 100vh;
   width: 100dvw; height: 100dvh;
-  z-index: 45;
-  background: #000;
-  overflow: hidden;
-}
-
-/* —— 移动端沉浸全屏（系统仍处于竖屏时的 CSS 90° 旋转兜底） —— */
-.fs-landscape {
-  position: fixed;
-  top: 50%; left: 50%; right: auto; bottom: auto;
-  width: 100vh; height: 100vw;
-  width: 100dvh; height: 100dvw;
-  transform: translate(-50%, -50%) rotate(90deg);
-  transform-origin: center center;
   z-index: 45;
   background: #000;
   overflow: hidden;

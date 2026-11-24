@@ -12,6 +12,12 @@ const MANIFEST_LIMIT: usize = 1024 * 1024;
 /// Reads must stop at limit + 1 bytes. The core validates size and UTF-8.
 pub trait DocumentReader: Send + Sync {
     fn read(&self, location: &str, limit: usize) -> Result<Vec<u8>>;
+    fn resolve_relative(&self, _base: &str, _reference: &str) -> Result<String> {
+        Err(PluginError::new(
+            "UNSUPPORTED",
+            "请先选择列表所在目录并授权，或分别选择插件文件",
+        ))
+    }
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -220,7 +226,11 @@ fn manifest(text: &str) -> Result<Option<Value>> {
         Err(_) => Ok(None),
     }
 }
-fn resolve_entry(base: &str, reference: &str) -> Result<String> {
+fn resolve_entry(
+    base: &str,
+    reference: &str,
+    reader: Option<&dyn DocumentReader>,
+) -> Result<String> {
     if remote(base) {
         let url = Url::parse(base)
             .and_then(|u| u.join(reference))
@@ -234,10 +244,9 @@ fn resolve_entry(base: &str, reference: &str) -> Result<String> {
         return Ok(reference.into());
     }
     if base.starts_with("content://") {
-        return Err(PluginError::new(
-            "UNSUPPORTED",
-            "此文件提供者未授予同目录访问权限；请分别选择插件文件，或使用含 HTTPS 插件地址的列表",
-        ));
+        return reader
+            .ok_or_else(|| PluginError::new("UNSUPPORTED", "当前宿主不支持目录授权"))?
+            .resolve_relative(base, reference);
     }
     let base = Url::from_file_path(base).map_err(|_| PluginError::invalid("本地列表路径无效"))?;
     base.join(reference)
@@ -263,7 +272,7 @@ impl PluginManager {
             return Err(PluginError::cancelled());
         }
         if remote(location) {
-            let network = self.distribution_network()?;
+            let network = Arc::new(self.distribution_network()?);
             let response = network.fetch(Transfer::from_json(json!({"url":location,"responseType":"bytes","credentials":"omit","maxBytes":JS_LIMIT,"retry":0})), cancel.clone()).await?;
             let meta = response.json();
             if meta["ok"] != true {
@@ -324,25 +333,34 @@ impl PluginManager {
         &self,
         location: &str,
         document: Document,
+        cancel: &CancellationToken,
     ) -> Result<(String, String, Vec<Candidate>)> {
         let installed = self.plugins.read().await.clone();
         if let Some(list) = manifest(&document.text)? {
             let mut items = vec![];
             for entry in list["plugins"].as_array().unwrap() {
+                if cancel.is_cancelled() {
+                    return Err(PluginError::cancelled());
+                }
                 let id = entry["id"].as_str().unwrap_or("").to_string();
                 let name = entry["name"].as_str().unwrap_or("").to_string();
                 let version = entry["version"].as_str().unwrap_or("").to_string();
-                let parsed = (|| {
+                let base = document.final_location.clone();
+                let reference = entry["url"].as_str().unwrap_or("").to_string();
+                let reader = self.document_reader.clone();
+                let identity = json!({"id":id,"name":name,"version":version,"protocol":1});
+                let resolve = tokio::task::spawn_blocking(move || {
                     // Reuse exactly the plugin's identity and version validation rules.
-                    Meta::parse(json!({"id":id,"name":name,"version":version,"protocol":1}))?;
-                    resolve_entry(
-                        &document.final_location,
-                        entry["url"]
-                            .as_str()
-                            .filter(|s| !s.is_empty())
-                            .ok_or_else(|| PluginError::invalid("列表条目缺少 url"))?,
-                    )
-                })();
+                    Meta::parse(identity)?;
+                    if reference.is_empty() {
+                        return Err(PluginError::invalid("列表条目缺少 url"));
+                    }
+                    resolve_entry(&base, &reference, reader.as_deref())
+                });
+                let parsed = tokio::select! {
+                    _ = cancel.cancelled() => return Err(PluginError::cancelled()),
+                    result = resolve => result.map_err(|_| PluginError::internal("解析列表条目失败"))?,
+                };
                 let (source, error) = match parsed {
                     Ok(v) => (v, None),
                     Err(e) => (String::new(), Some(e)),
@@ -433,7 +451,8 @@ impl PluginManager {
                     document.final_location.clone()
                 };
                 let subscribe = remote(&location) && manifest(&document.text)?.is_some();
-                let (name, description, items) = self.candidates(&location, document).await?;
+                let (name, description, items) =
+                    self.candidates(&location, document, &op.cancel).await?;
                 Ok((name, description, items, subscribe))
             }
             .await;
@@ -664,7 +683,7 @@ impl PluginManager {
             if manifest(&document.text)?.is_none() {
                 return Err(PluginError::invalid("来源列表已不再是 JSON 插件列表"));
             }
-            let (_, _, candidates) = self.candidates(location, document).await?;
+            let (_, _, candidates) = self.candidates(location, document, cancel).await?;
             let mut matching = candidates.into_iter().filter(|c| c.info.id == id);
             let candidate = matching
                 .next()

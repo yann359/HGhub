@@ -7,7 +7,7 @@ export async function openRecommendations(page, name) {
   await page.getByRole("button", { name: `推荐分区 · ${name}`, exact: true }).click();
 }
 export const installedTab = page => page.getByRole("navigation", { name: "插件中心分栏" }).getByRole("button", { name: /^已安装/ }).click();
-export const importTab = page => page.getByRole("button", { name: "导入与订阅", exact: true }).click();
+export const importTab = page => page.getByRole("navigation", { name: "插件中心分栏" }).getByRole("button", { name: /^导入与(列表)?订阅$/ }).click();
 
 export async function playerPanel(page, panel) {
   const heading = page.locator('.legacy-panel-heading');

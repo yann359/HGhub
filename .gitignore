@@ -9,6 +9,7 @@ test-results/
 artifacts/
 build_output/
 __pycache__/
+/output/playwright/
 src-tauri/target/
 src-tauri/crates/*/target/
 src-tauri/gen/
@@ -38,8 +39,6 @@ Thumbs.db
 # API
 docs/API.md
 
-# Agent instructions (local)
-AGENTS.md
 
 # Private development baseline; never bundled or published with the client.
 /local-plugins/

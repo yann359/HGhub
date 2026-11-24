@@ -21,6 +21,7 @@ async fn runtime_errors_logging_and_snapshots_follow_contract() {
           if(query==='snapshot') {try{hg.env.features.push('fake');}catch{};try{hg.env.app.version='fake';}catch{};return {items:[{id:'x',title:JSON.stringify({app:hg.env.app,features:hg.env.features})}]};}
           if(query==='invalid') return {items:[{id:'x',title:'x'}],bad:()=>{}};
           if(query==='private') return {items:[{id:'x',title:JSON.stringify(Object.getOwnPropertyNames(globalThis).filter(k=>k.startsWith('__hpp')))}]};
+          if(query==='atob') {const text=Array.from({length:70000},(_,i)=>String.fromCharCode(i&255)).join('');const decoded=atob(btoa(text));return {items:[{id:'x',title:JSON.stringify([decoded.length,decoded===text])}]};}
           if(query==='sparse') {try{await hg.storage.set('sparse',Array(2));}catch(e){return {items:[{id:'x',title:e.code}]};}}
           return {items:[]};
         }}
@@ -98,6 +99,16 @@ async fn runtime_errors_logging_and_snapshots_follow_contract() {
         .await
         .unwrap();
     assert_eq!(value["items"][0]["title"], "INVALID_ARGUMENT");
+    let value = manager
+        .call(
+            "fixture.contract",
+            "search.search",
+            json!({"query":"atob"}),
+            "atob".into(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(value["items"][0]["title"], "[70000,true]");
     let logs = manager.logs("fixture.contract").await.unwrap();
     assert!(logs.iter().any(|line| line["text"]
         .as_str()

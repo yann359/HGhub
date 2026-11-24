@@ -1,0 +1,5 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <application>
+        <service android:name=".ProcessIsolationFixture" android:exported="false" android:process=":hpp_isolation_test" />
+    </application>
+</manifest>

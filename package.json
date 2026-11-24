@@ -1,7 +1,7 @@
 {
   "name": "huangguo-client",
   "private": true,
-  "version": "0.0.1",
+  "version": "0.0.5",
   "license": "PolyForm-Noncommercial-1.0.0",
   "type": "module",
   "scripts": {
@@ -12,6 +12,7 @@
     "docs:test": "node scripts/test-docs.mjs",
     "docs:preview": "node scripts/preview-docs.mjs",
     "test:plugins": "cargo build --manifest-path src-tauri/crates/hpp/Cargo.toml --example dev_host && node scripts/test-plugins.mjs",
+    "test:experience": "cargo build --manifest-path src-tauri/crates/hpp/Cargo.toml --example dev_host && node scripts/test-plugins.mjs --experience",
     "test:frontend": "cargo build --manifest-path src-tauri/crates/hpp/Cargo.toml --example dev_host && node scripts/test-plugins.mjs --frontend",
     "tauri": "tauri",
     "app:dev": "tauri dev",

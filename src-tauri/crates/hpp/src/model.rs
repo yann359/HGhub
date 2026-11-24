@@ -183,6 +183,14 @@ pub fn url(raw: &str, allow_http: bool, external: bool) -> Result<()> {
     if raw.len() > 8192 || raw.chars().any(char::is_control) {
         return Err(PluginError::invalid("资源地址无效"));
     }
+    // eD2k uses a pipe-delimited link body, not a URL authority/host.
+    if external
+        && raw.split_once("://").is_some_and(|(scheme, body)| {
+            scheme.eq_ignore_ascii_case("ed2k") && body.starts_with('|') && body.ends_with("|/")
+        })
+    {
+        return Ok(());
+    }
     let u = url::Url::parse(raw).map_err(|_| PluginError::invalid("需要绝对资源地址"))?;
     let valid = if external {
         matches!(
@@ -456,6 +464,13 @@ pub fn playback(v: Value, http: bool, resolver: bool) -> Result<Value> {
         }
         for key in ["label", "serverId", "resolverId"] {
             text(&mut s, key, if key == "label" { 200 } else { 256 })?;
+        }
+        if let Some(external) = s.remove("external") {
+            let mut hint = object(external)?;
+            text(&mut hint, "app", 200)?;
+            text(&mut hint, "mime", 200)?;
+            keep(&mut hint, &["app", "mime"]);
+            s.insert("external".into(), Value::Object(hint));
         }
         for key in ["height", "bitrate"] {
             if s.get(key)

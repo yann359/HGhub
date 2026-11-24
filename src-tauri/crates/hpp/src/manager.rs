@@ -65,8 +65,10 @@ pub struct PluginInfo {
     pub revision: String,
 }
 pub struct PluginManager {
+    media_capabilities: Mutex<crate::capabilities::MediaCapabilities>,
     root: PathBuf,
     document_reader: Option<Arc<dyn DocumentReader>>,
+    web_login: Option<Arc<dyn crate::web_login::WebLoginProvider>>,
     plugins: tokio::sync::RwLock<BTreeMap<String, Arc<tokio::sync::Mutex<Installed>>>>,
     mutation: tokio::sync::Mutex<()>,
     strict: Option<bool>,
@@ -122,8 +124,10 @@ impl PluginManager {
             root.join("resolver-preferences.json"),
         )?;
         Ok(Self {
+            media_capabilities: Default::default(),
             root,
             document_reader: None,
+            web_login: None,
             plugins: tokio::sync::RwLock::new(plugins),
             mutation: tokio::sync::Mutex::new(()),
             strict,
@@ -136,9 +140,47 @@ impl PluginManager {
             library,
         })
     }
+    pub fn with_web_login(mut self, provider: Arc<dyn crate::web_login::WebLoginProvider>) -> Self {
+        self.web_login = Some(provider);
+        self
+    }
     pub fn with_document_reader(mut self, reader: Arc<dyn DocumentReader>) -> Self {
         self.document_reader = Some(reader);
         self
+    }
+    pub async fn configure_media(
+        &self,
+        media: crate::capabilities::MediaCapabilities,
+    ) -> Result<bool> {
+        media.validate()?;
+        let _playback = self.playback_gate.write().await;
+        let _mutation = self.mutation.lock().await;
+        {
+            let mut current = self.media_capabilities.lock().unwrap();
+            if *current == media {
+                return Ok(false);
+            }
+            *current = media;
+        }
+        // Environment is a load-time snapshot: cancel old workers and sessions;
+        // the next list/call initializes using the new capabilities.
+        let plugins = self
+            .plugins
+            .read()
+            .await
+            .values()
+            .cloned()
+            .collect::<Vec<_>>();
+        for plugin in plugins {
+            let mut p = plugin.lock().await;
+            if let Some(worker) = p.worker.take() {
+                worker.stop();
+            }
+            self.sessions.release_plugin(&p.entry.meta.id);
+            p.revision = uuid::Uuid::new_v4().to_string();
+            p.error = None;
+        }
+        Ok(true)
     }
     fn installed(
         dir: PathBuf,
@@ -200,9 +242,11 @@ impl PluginManager {
         }
         Value::Object(v)
     }
-    fn requirements(meta: &Meta) -> Result<()> {
+    fn requirements(&self, meta: &Meta) -> Result<()> {
         for r in &meta.requires {
             let supported = match r.r#type.as_str() {
+                "feature" if r.name == "webview" => self.web_login.is_some(),
+                "api" if r.name == "webview.open" => self.web_login.is_some(),
                 "feature" => r.name == "charset.legacy",
                 "api" => [
                     "http.fetch",
@@ -219,6 +263,7 @@ impl PluginManager {
                     "crypto.hmac",
                     "crypto.aesEncrypt",
                     "crypto.aesDecrypt",
+                    "crypto.rsaEncrypt",
                     "crypto.randomBytes",
                     "crypto.randomUUID",
                     "codec.base64Encode",
@@ -269,7 +314,7 @@ impl PluginManager {
             self.sessions.release_plugin(&p.entry.meta.id);
             p.revision = uuid::Uuid::new_v4().to_string();
         }
-        Self::requirements(&p.entry.meta)?;
+        self.requirements(&p.entry.meta)?;
         if let Some(w) = p.worker.take() {
             w.stop();
         }
@@ -283,6 +328,8 @@ impl PluginManager {
                 p.store.clone(),
                 p.network.clone(),
                 p.logs.clone(),
+                self.media_capabilities.lock().unwrap().clone(),
+                self.web_login.clone(),
             )
         };
         let mut w = spawn(p.entry.endpoint.clone()).await?;
@@ -633,6 +680,16 @@ impl PluginManager {
         params: Transfer,
         request_id: String,
     ) -> Result<Transfer> {
+        self.call_scoped(id, method, params, request_id, false).await
+    }
+    pub(crate) async fn call_scoped(
+        &self,
+        id: &str,
+        method: &str,
+        mut params: Transfer,
+        request_id: String,
+        user_auth: bool,
+    ) -> Result<Transfer> {
         if request_id.is_empty() || request_id.len() > 128 {
             return Err(PluginError::invalid("requestId 无效"));
         }
@@ -645,14 +702,24 @@ impl PluginManager {
             if !w.methods.iter().any(|m| m == method) {
                 return Err(PluginError::new("UNSUPPORTED", "插件未实现该方法"));
             }
+            if matches!(
+                method,
+                "media.resolvePlayback" | "live.resolve" | "resolver.resolve"
+            ) {
+                let Transfer::Object(ref mut fields) = params else {
+                    return Err(PluginError::invalid("播放参数必须是对象"));
+                };
+                fields.insert("codecs".into(), Transfer::from_json(json!(w.media.codecs)));
+            }
             (w, p.entry.meta.clone(), p.logs.clone())
         };
         let result = w
-            .call(
+            .call_scoped(
                 request_id.clone(),
                 method.into(),
                 params,
                 meta.budget(method),
+                user_auth && method == "auth.submit",
             )
             .await
             .map_err(|mut e| {
@@ -692,6 +759,7 @@ impl PluginManager {
             .map(|v| v.json())
     }
     pub async fn cancel(&self, request_id: &str) {
+        self.sessions.cancel_refresh_waiter(request_id);
         self.distribution.cancel(request_id);
         let list = self
             .plugins
@@ -709,7 +777,7 @@ impl PluginManager {
     pub async fn logs(&self, id: &str) -> Result<Vec<Value>> {
         let p = self.get(id).await?;
         let p = p.lock().await;
-        let logs = p.logs.lock().unwrap().iter().cloned().collect();
+        let logs = p.logs.lock().unwrap().snapshot();
         Ok(logs)
     }
     pub async fn settings_get(&self, id: &str) -> Result<Value> {

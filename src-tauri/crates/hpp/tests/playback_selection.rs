@@ -3,6 +3,78 @@ use serde_json::{json, Value};
 use std::sync::Arc;
 
 #[tokio::test]
+async fn external_streams_require_confirmation_without_creating_media_sessions() {
+    let dir = tempfile::tempdir().unwrap();
+    let manager = Arc::new(PluginManager::with_mode(dir.path().into(), Some(false)).unwrap());
+    let source = r#"
+      export const meta={id:'fixture.external',name:'External',version:'1.0.0',protocol:1};
+      export default hg=>({media:{getDetail({id}){return {id,title:id,playlists:[{id:'main',episodes:[]}]};},
+        resolvePlayback(p){return {streams:[{url:p.episodeId,kind:'external',external:{app:'Player',mime:'video/mp4'},headers:{Cookie:'secret',Authorization:'secret'}}]};}
+      }});
+    "#;
+    manager
+        .import_code(source.into(), None, false)
+        .await
+        .unwrap();
+    for url in [
+        "https://media.example/movie",
+        "http://media.example/movie",
+        "magnet:?xt=urn:btih:fixture",
+        "ed2k://|file|fixture|1|abc|/",
+        "rtsp://media.example/live",
+        "rtmp://media.example/live",
+    ] {
+        for reason in ["play", "preload", "refresh"] {
+            let error = manager
+                .prepare_media(
+                    "fixture.external",
+                    json!({"mediaId":"one","episodeId":url,"reason":reason,"codecs":[]}),
+                    0,
+                    None,
+                    format!("external-{reason}"),
+                )
+                .await
+                .err()
+                .unwrap();
+            assert_eq!(error.code, "INTERACTION_REQUIRED", "{url}: {error:?}");
+            let choices = error.playback_choices.unwrap();
+            assert_eq!(choices["external"]["url"], url);
+            assert_eq!(choices["external"]["app"], "Player");
+            assert!(!choices.to_string().contains("secret"));
+            assert!(!manager.sessions.has_playback());
+        }
+    }
+    for url in [
+        "javascript:alert(1)",
+        "file:///tmp/video",
+        "data:video/mp4,test",
+        "https://user:password@media.example/video",
+        "https://media.example/\nvideo",
+    ] {
+        assert!(model::url(url, true, true).is_err());
+    }
+    let error: hghub_hpp::PluginError = serde_json::from_value(json!({"code":"INTERACTION_REQUIRED","message":"fixture","playbackChoices":{"external":{"url":"https://forged.example"}}})).unwrap();
+    assert!(error.playback_choices.is_none());
+    assert!(model::playback(json!({"streams":[{"kind":"external","url":"https://media.example","external":{"app":{}}}]}), false, false).is_err());
+    let valid = model::playback(json!({"streams":[{"kind":"external","url":"https://media.example","external":{"app":"Player","private":"discard"}}]}), false, false).unwrap();
+    assert_eq!(valid["streams"][0]["external"], json!({"app":"Player"}));
+    manager.import_code(r#"export const meta={id:'fixture.external.resolver',name:'Resolver',kind:'resolver',matches:['media.example'],version:'1.0.0',protocol:1};
+        export default hg=>({resolver:{resolve(){return {streams:[{kind:'external',url:'magnet:?xt=urn:btih:resolved'}]};}}});"#.into(), None, false).await.unwrap();
+    manager
+        .import_code(
+            source.replace("kind:'external',external:", "kind:'page',external:"),
+            None,
+            false,
+        )
+        .await
+        .unwrap();
+    let error = manager.prepare_media("fixture.external", json!({"mediaId":"one","episodeId":"https://media.example/page","reason":"play","codecs":[]}), 0, None, "external-resolver".into()).await.err().unwrap();
+    let choices = error.playback_choices.unwrap();
+    assert_eq!(choices["external"]["url"], "magnet:?xt=urn:btih:resolved");
+    assert_eq!(choices["resolver"]["pluginId"], "fixture.external.resolver");
+}
+
+#[tokio::test]
 async fn source_and_resolver_choices_route_to_their_own_stage_without_exposing_resources() {
     let dir = tempfile::tempdir().unwrap();
     let manager = Arc::new(PluginManager::with_mode(dir.path().into(), Some(false)).unwrap());
@@ -16,6 +88,8 @@ async fn source_and_resolver_choices_route_to_their_own_stage_without_exposing_r
           return {servers:[{id:'source-a',label:'源 A',secret:'discard'},{id:'source-b',label:'源 B'}],
             streams:[{url:'https://media.example/direct.mp4',format:'progressive',serverId,label:'直接播放',headers:{Authorization:'secret'}},
               {url:'https://page.example/watch',kind:'page',serverId,label:'播放页',resolverId:'fixture.choice.resolver'}],
+            subtitles:[{url:'https://media.example/source.srt',format:'srt',default:true,label:'Source'},
+              {url:'https://media.example/ignored.ass',format:'ass',default:true}],
             durationSec:100,expiresAt:9000000000000};
       }}});
     "#;
@@ -28,6 +102,8 @@ async fn source_and_resolver_choices_route_to_their_own_stage_without_exposing_r
         return {servers:[{id:'resolver-a',label:'解析 A'},{id:'resolver-b',label:'解析 B'}],
           streams:[{url:'https://media.example/a.mp4',format:'progressive',label:'720p',height:720,serverId},
             {url:'https://media.example/b.mp4',format:'progressive',label:'1080p',height:1080,serverId,headers:{Cookie:'secret'}}],
+          subtitles:[{url:'https://media.example/resolver.srt',format:'srt',default:true,label:'Resolver'},
+            {url:'https://media.example/second.vtt',format:'vtt',default:true}],
           durationSec:120,expiresAt:8000000000000};
       }}});
     "#;
@@ -61,7 +137,23 @@ async fn source_and_resolver_choices_route_to_their_own_stage_without_exposing_r
         2
     );
     assert_eq!(prepared["playback"]["durationSec"], 120);
+    let tracks = prepared["playback"]["subtitles"].as_array().unwrap();
+    assert_eq!(tracks.len(), 3);
+    assert!(tracks.iter().all(|t| t["format"] == "vtt"));
+    let defaults: Vec<_> = tracks.iter().filter(|t| t["default"] == true).collect();
+    assert_eq!(defaults.len(), 1);
+    assert_eq!(defaults[0]["label"], "Resolver");
     assert_eq!(prepared["playback"]["expiresAt"], 8000000000000u64);
+    let refreshed = manager
+        .refresh_media(
+            prepared["sessionId"].as_str().unwrap(),
+            0,
+            "refresh-selected-resolver".into(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(refreshed.version, 1);
+    assert_eq!(refreshed.choices, prepared["choices"]);
     let visible = prepared.to_string();
     for hidden in [
         "secret",

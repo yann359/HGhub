@@ -74,7 +74,7 @@ interface HttpResponse<T> {
   ok: boolean;                       // 200–299
   url: string;                       // 最终地址
   headers: Record<string, string>;   // 键小写；多值以 ", " 连接
-  setCookies: string[];              // 原始 Set-Cookie，逐条
+  setCookies: string[];              // 对插件可见的原始 Set-Cookie，逐条
   data: T;                           // 按 responseType：string / 解析后的 JSON / Uint8Array
   fromCache: boolean;
 }
@@ -83,6 +83,7 @@ interface HttpResponse<T> {
 - **非 2xx 不抛错。** 插件根据 `status` 自行映射为合适的 `PluginError`。
 - `responseType: "json"` 而响应体不是合法 JSON 时抛 `UPSTREAM_CHANGED`。
 - `gzip`、`br` 压缩由宿主处理。
+- 目标 origin 有宿主管理的网页登录会话时，响应中的全部 `Set-Cookie` 由宿主处理，`headers` 省略 `set-cookie`，`setCookies` 为空。`credentials: "omit"` 跳过自动发送及写入，同样隐藏该站点的 `Set-Cookie`。有 `Set-Cookie` 的响应即使隐藏了该头也不能缓存。
 
 ### 2.3 重定向
 
@@ -145,6 +146,11 @@ interface HostEnv {
 
 - 全部为插件加载时的快照。界面语言等变化后，宿主重载插件。
 - 插件**应当**用 `features` 与 `media` 做能力探测，而不是根据 `platform` 或 `app.version` 推断。
+- 媒体能力以当前播放路径的能力 API 探测为依据；编码名是编码家族，不保证该家族所有 profile、
+  分辨率、码率或音视频组合均能播放，也不等同于实际样本解码验收。未探测或没有可靠支持结果时允许空列表，
+  不得默认宣称 H.264 或按操作系统名称猜测。HGhub 当前探测方式与保守范围见 [实现说明](IMPLEMENTATION.md#播放能力探测2026-11-16)。
+- 点播、直播及解析器收到的 `params.codecs` 必须与该插件加载快照的 `hg.env.media.codecs` 一致，
+  包括正常播放、预加载和刷新。宿主探测结果变化时重建运行时，不能原地修改已有只读快照。
 - 需要"设备号"的上游，请自行生成随机值并存入 `hg.storage`。
 
 ### 3.1 可选特性
@@ -193,14 +199,21 @@ interface Cookie {
 }
 ```
 
-- Cookie 罐按**插件**隔离并持久保存；罐内按请求 URL 的 domain、host-only、path、secure、expires 等正常 Cookie 规则匹配，
+- 普通 Cookie 罐按**插件**隔离并持久保存；罐内按请求 URL 的 domain、host-only、path、secure、expires 等正常 Cookie 规则匹配，
   不因当前站点线路变化而整体切换。同一服务跨镜像能否登录由上游 Cookie 域与插件登录逻辑决定。
-- `get({ url })` 返回会发送给该 URL 的 Cookie；`set` 的 domain 必须能由给定 URL 设置；
+- `get({ url })` 返回普通罐中匹配该 URL 的 Cookie；`set` 的 domain 必须能由给定 URL 设置；
   `clear({ url })` 删除匹配该 URL 的 Cookie，不传 url 则清空该插件全部 Cookie。
 - `set` 省略 domain 时绑定 URL 的主机；给出 domain 时默认非 host-only，可显式设为 true 限定该主机。
 - `hg.http.fetch` 自动保存响应的 `Set-Cookie` 并在后续请求中附加，除非 `credentials: "omit"`。
 - 会话 Cookie 在插件卸载后**保留**（插件随时可能被卸载，不能以此模拟浏览器会话结束）；
   插件登出或用户清除数据时清空。
+
+### 5.1 宿主管理的网页登录会话
+
+- 一次性视图成功移交的会话按 **插件 ID + 起始 HTTPS origin** 保存。origin 包括主机和有效端口。完成页须回到起始 origin，第三方身份提供方的 Cookie 只留在临时视图。
+- `credentials: "include"`（默认）以及该插件的媒体请求，在该 origin 有网页登录会话时使用其专用罐，仍按 Cookie 自身的 domain、host-only、path、secure 和过期属性匹配。每次重定向重新选择目标的罐。显式 `Cookie` 请求头沿用既有的覆盖规则。
+- `hg.cookies.get/set` 只访问普通罐。网页登录 Cookie 和后续同源 `Set-Cookie` 都留在宿主管理的罐内，插件用同源账号接口读取用户资料。源和解析器具有独立归属。
+- 对同一 origin 再次登录成功，原子替换此前的网页登录会话。失败或取消保留旧会话。`hg.cookies.clear({ url })` 清除该 origin 的整个网页登录会话（包括其他路径），并按普通规则清除匹配 URL 的普通 Cookie。无参数清除该插件两类罐。注销或换号前发出的请求，其迟到响应不能恢复或修改旧会话。
 
 ## 6. `hg.storage`
 
@@ -253,7 +266,13 @@ interface RsaParams {
 ```
 
 - GCM 的 16 字节认证标签附在密文末尾；校验失败抛 `INVALID_ARGUMENT`。
-- `rsaEncrypt` 只做公钥加密（部分上游要求用公钥加密登录密码）。
+- `rsaEncrypt` 只做公钥加密（部分上游要求用公钥加密登录密码）。公钥模数为 1024–8192 位；
+  PEM 标签为 `PUBLIC KEY`（SPKI）或 `RSA PUBLIC KEY`（PKCS#1），不接受私钥。
+- RSA 的 `pkcs1` 表示 RSAES-PKCS1-v1_5；OAEP 使用所选摘要及相同摘要的 MGF1，label 为空。
+  由系统安全随机源提供填充随机性，返回长度为模数字节数的密文，不自动分块。
+- 设模数字节数为 k，RSA 单次明文上限：`pkcs1` 为 k−11，`oaep-sha1` 为 k−42，
+  `oaep-sha256` 为 k−66。`data` 必须是 `Uint8Array`；文本先 UTF-8 编码，再按字节计算长度。
+  无效 PEM/公钥、填充、类型或超长明文抛 `INVALID_ARGUMENT`；随机源失败抛 `INTERNAL`。
 - 上表之外的算法由插件自行打包纯 JS 实现。
 
 ## 8. `hg.codec`
@@ -326,7 +345,7 @@ hg.log.error(...args: unknown[]): void
 
 ## 12. `hg.webview`（可选）
 
-需要特性 `webview`。用于上游只能通过网页完成的登录或人机验证。
+需要特性 `webview`。本节定义带完成条件的网页登录。
 
 ```ts
 hg.webview.open(params: {
@@ -344,27 +363,21 @@ hg.webview.open(params: {
 - 网页视图使用一次性、独立的数据目录，与应用界面不同源，且不能访问 `hg`。
 - 网页由平台原生网络栈加载，能力声明不等于所有请求都经过 hg.http；网络策略作用范围见 [03 §2](03-host-rules.md)。
 - `doneWhen` 至少给出一个条件；同时给出 URL 与 Cookie 条件时必须全部满足。
-  URL 条件按解析后的 origin 和路径前缀比较，不作未经解析的字符串前缀匹配。
+  URL 条件匹配相同的 HTTPS origin 和完整路径段前缀。例如 `/account` 匹配 `/account` 和 `/account/me`，不匹配 `/accounting`。查询参数和片段不参与路径匹配。
   只有起始导航后的主框架导航或 Cookie 状态变化才能触发完成，不能因初始 URL 已匹配就立即关闭。
-  Cookie 条件针对当前主框架地址判定。满足后宿主关闭视图，把该地址下的 Cookie 写入插件自己的 Cookie 罐，
-  然后返回。因此插件通常需要同时使用 `hg.http` 的 Cookie 支持。
-- 用户关闭视图时抛 `CANCELLED`；超时抛 `TIMEOUT`。打开期间暂停本次调用的剩余预算，
-  `ctx.deadline` 动态为 `null`；关闭后按剩余预算恢复。用户离开、取消与应用挂起仍可结束该调用并关闭视图。
-- 同一插件同时至多一个网页视图；宿主在预取等非用户发起的调用中可以拒绝打开（抛 `UNSUPPORTED`）。
+  Cookie 条件针对起始 origin 的当前主框架地址判定。完成时只提交该地址匹配的 Cookie，并按照 [§5.1](#51-宿主管理的网页登录会话) 在宿主保存。`open` 返回 `finalUrl`，插件随后使用同源账号接口确认登录态。页面 localStorage 不进入返回值。
+- 宿主确认 `doneWhen` 满足后完成登录。用户在完成前关闭视图时抛 `CANCELLED`，超时抛 `TIMEOUT`。
+  打开期间暂停本次调用的剩余预算，`ctx.deadline` 动态为 `null`，关闭后按剩余预算恢复。用户离开、取消与应用挂起仍可结束该调用并关闭视图。
+- 同一插件同时至多一个网页视图。HGhub 只允许用户提交认证表单时从 `auth.submit` 打开，其他入口抛 `UNSUPPORTED`。窗口已打开时，同一插件的第二次打开请求抛 `RATE_LIMITED`。
 
-典型用法（需要验证时由插件发起）：
+用户点击插件的网页登录方式后，`auth.submit` 可采用以下流程。
 
 ```js
-try {
-  return await api.fetchJson(path, ctx);
-} catch (err) {
-  if (err.code === "INTERACTION_REQUIRED" && hg.env.features.includes("webview")) {
-    await hg.webview.open({ url: hg.endpoint.url("/login"), title: "完成验证",
-      doneWhen: { urlPrefix: hg.endpoint.url("/account"), cookieNames: ["session"] } });
-    return await api.fetchJson(path, ctx);   // 带着新 Cookie 重试一次
-  }
-  throw err;
-}
+await hg.webview.open({ url: hg.endpoint.url("/login"), title: "登录账号",
+  doneWhen: { urlPrefix: hg.endpoint.url("/account"), cookieNames: ["session"] } });
+const user = await api.getProfile(ctx); // 通过同源账号接口查询
+if (!user) throw new hg.PluginError("AUTH_INVALID", "站点尚未确认登录");
+return { status: "ok", user };
 ```
 
 ## 13. `hg.PluginError`

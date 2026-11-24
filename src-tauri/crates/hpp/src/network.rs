@@ -14,11 +14,14 @@ use serde_json::{json, Value};
 use std::{
     collections::HashMap,
     path::PathBuf,
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex, Weak},
     time::{Duration, Instant},
 };
 use tokio_util::sync::CancellationToken;
 use url::Url;
+
+mod api;
+pub use api::Queue;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -32,16 +35,46 @@ struct SavedCookie {
     http_only: bool,
     expires_at: Option<u64>,
 }
+#[derive(Clone, Serialize, Deserialize)]
+struct WebLoginSession {
+    generation: String,
+    cookies: Vec<SavedCookie>,
+}
+
+#[derive(Clone, Default, Serialize, Deserialize)]
+struct CookieJars {
+    ordinary: Vec<SavedCookie>,
+    // Network belongs to a single plugin. URL origins include the scheme and port.
+    web_logins: HashMap<String, WebLoginSession>,
+}
+
+impl CookieJars {
+    fn len(&self) -> usize {
+        self.ordinary.len()
+            + self
+                .web_logins
+                .values()
+                .map(|s| s.cookies.len())
+                .sum::<usize>()
+    }
+}
+
 pub struct Network {
     pub meta: Meta,
     pub strict_override: Option<bool>,
-    jar: Mutex<Vec<SavedCookie>>,
+    jar: Mutex<CookieJars>,
     jar_path: PathBuf,
-    gate: tokio::sync::Semaphore,
+    gate: Arc<tokio::sync::Semaphore>,
+    hosts: Mutex<HashMap<String, Weak<tokio::sync::Semaphore>>>,
+    inflight: Mutex<HashMap<String, Arc<api::Flight>>>,
     rate: Mutex<(f64, Instant)>,
     cache: Mutex<HashMap<String, CachedResponse>>,
+    clients: tokio::sync::Mutex<HashMap<String, (Instant, reqwest::Client)>>,
     pub cooldown: Arc<Mutex<HashMap<String, Instant>>>,
 }
+#[derive(Clone)]
+struct RedactedSetCookie;
+
 struct CachedResponse {
     value: Transfer,
     expires: Instant,
@@ -56,19 +89,35 @@ impl Network {
     ) -> Result<Self> {
         let jar_path = dir.join("cookies.json");
         let jar = if jar_path.exists() {
-            serde_json::from_slice(&std::fs::read(&jar_path)?)
+            #[derive(Deserialize)]
+            #[serde(untagged)]
+            enum DiskJar {
+                Ordinary(Vec<SavedCookie>),
+                WithWebLogins(CookieJars),
+            }
+            match serde_json::from_slice(&std::fs::read(&jar_path)?)
                 .map_err(|_| PluginError::internal("Cookie 存储损坏"))?
+            {
+                DiskJar::Ordinary(ordinary) => CookieJars {
+                    ordinary,
+                    ..Default::default()
+                },
+                DiskJar::WithWebLogins(jars) => jars,
+            }
         } else {
-            vec![]
+            CookieJars::default()
         };
         Ok(Self {
             meta,
             strict_override: strict,
             jar: Mutex::new(jar),
             jar_path,
-            gate: tokio::sync::Semaphore::new(6),
+            gate: Arc::new(tokio::sync::Semaphore::new(6)),
+            hosts: Default::default(),
+            inflight: Default::default(),
             rate: Mutex::new((15.0, Instant::now())),
             cache: Mutex::new(HashMap::new()),
+            clients: Default::default(),
             cooldown,
         })
     }
@@ -93,13 +142,20 @@ impl Network {
             && (!c.secure || u.scheme() == "https")
             && c.expires_at.is_none_or(|t| t > now())
     }
-    fn save_jar(&self, jar: &[SavedCookie]) -> Result<()> {
-        atomic_write(
-            &self.jar_path,
-            &serde_json::to_vec(jar).map_err(|_| PluginError::internal("无法保存 Cookie"))?,
-        )
+    fn save_jar(&self, jars: &CookieJars) -> Result<()> {
+        let count = jars.len();
+        if count > 3000 {
+            return Err(PluginError::invalid("Cookie 数量超限"));
+        }
+        let encoded = if jars.web_logins.is_empty() {
+            serde_json::to_vec(&jars.ordinary)
+        } else {
+            serde_json::to_vec(jars)
+        }
+        .map_err(|_| PluginError::internal("无法保存 Cookie"))?;
+        atomic_write(&self.jar_path, &encoded)
     }
-    fn put_cookie(&self, u: &Url, v: Value) -> Result<()> {
+    fn parse_cookie(u: &Url, v: Value) -> Result<SavedCookie> {
         let host = u
             .host_str()
             .ok_or_else(|| PluginError::invalid("Cookie URL 缺少主机"))?;
@@ -138,17 +194,62 @@ impl Network {
         {
             return Err(PluginError::invalid("Cookie 名称或值无效"));
         }
-        let mut jar = self.jar.lock().unwrap();
-        let mut next = jar.clone();
-        next.retain(|x| !(x.name == c.name && x.domain == c.domain && x.path == c.path));
+        Ok(c)
+    }
+    fn upsert(jar: &mut Vec<SavedCookie>, c: SavedCookie) {
+        jar.retain(|x| !(x.name == c.name && x.domain == c.domain && x.path == c.path));
         if c.expires_at.is_none_or(|t| t > now()) {
-            next.push(c);
+            jar.push(c);
         }
-        if next.len() > 3000 {
-            return Err(PluginError::invalid("Cookie 数量超限"));
+    }
+    // Called only by the native host after a successful, first-party login.
+    pub(crate) fn replace_web_login(
+        &self,
+        initial: &str,
+        final_url: &str,
+        values: Vec<Value>,
+    ) -> Result<()> {
+        let initial = self.target(initial)?;
+        let final_url = self.target(final_url)?;
+        if initial.scheme() != "https" || initial.origin() != final_url.origin() {
+            return Err(PluginError::invalid("网页登录必须在起始 HTTPS origin 完成"));
         }
+        if values.len() > 3000 {
+            return Err(PluginError::invalid("网页登录 Cookie 数量无效"));
+        }
+        let mut cookies = Vec::new();
+        for value in values {
+            // The native adapter must supply the original scope, including host-only.
+            if !value["hostOnly"].is_boolean()
+                || !value["secure"].is_boolean()
+                || !value["httpOnly"].is_boolean()
+                || !value["domain"].is_string()
+                || !value["path"].as_str().is_some_and(|p| p.starts_with('/'))
+                || !(value["expiresAt"].is_null() || value["expiresAt"].is_u64())
+            {
+                return Err(PluginError::invalid("缺少有效的网页登录 Cookie 属性"));
+            }
+            let c = Self::parse_cookie(&final_url, value)?;
+            if !Self::matches(&c, &final_url) {
+                return Err(PluginError::invalid("Cookie 与登录完成地址不匹配"));
+            }
+            Self::upsert(&mut cookies, c);
+        }
+        let mut guard = self.jar.lock().unwrap();
+        let mut next = guard.clone();
+        let origin = initial.origin().ascii_serialization();
+        if !next.web_logins.contains_key(&origin) && next.web_logins.len() >= 3000 {
+            return Err(PluginError::invalid("网页登录站点数量超限"));
+        }
+        next.web_logins.insert(
+            origin,
+            WebLoginSession {
+                generation: uuid::Uuid::new_v4().to_string(),
+                cookies,
+            },
+        );
         self.save_jar(&next)?;
-        *jar = next;
+        *guard = next;
         Ok(())
     }
     pub fn cookies(&self, op: &str, p: Value) -> Result<Value> {
@@ -160,21 +261,33 @@ impl Network {
                     .jar
                     .lock()
                     .unwrap()
+                    .ordinary
                     .iter()
                     .filter(|c| Self::matches(c, &u))
                     .collect::<Vec<_>>()))
             }
             "set" => {
-                self.put_cookie(
+                let c = Self::parse_cookie(
                     &u.ok_or_else(|| PluginError::invalid("缺少 Cookie URL"))?,
                     p["cookie"].clone(),
                 )?;
+                let mut guard = self.jar.lock().unwrap();
+                let mut next = guard.clone();
+                Self::upsert(&mut next.ordinary, c);
+                self.save_jar(&next)?;
+                *guard = next;
                 Ok(Value::Null)
             }
             "clear" => {
                 let mut jar = self.jar.lock().unwrap();
                 let mut next = jar.clone();
-                next.retain(|c| u.as_ref().is_some_and(|u| !Self::matches(c, u)));
+                next.ordinary
+                    .retain(|c| u.as_ref().is_some_and(|u| !Self::matches(c, u)));
+                if let Some(url) = u {
+                    next.web_logins.remove(&url.origin().ascii_serialization());
+                } else {
+                    next.web_logins.clear();
+                }
                 self.save_jar(&next)?;
                 *jar = next;
                 Ok(Value::Null)
@@ -182,7 +295,53 @@ impl Network {
             _ => Err(PluginError::invalid("未知 Cookie 操作")),
         }
     }
-    fn receive_cookies(&self, u: &Url, headers: &HeaderMap) -> Result<()> {
+    fn request_cookies(&self, url: &Url, attach: bool) -> (Option<String>, String) {
+        let jars = self.jar.lock().unwrap();
+        let session = jars.web_logins.get(&url.origin().ascii_serialization());
+        let generation = session.map(|s| s.generation.clone());
+        if !attach {
+            return (generation, String::new());
+        }
+        let cookies = session.map_or(&jars.ordinary, |s| &s.cookies);
+        let mut matched: Vec<_> = cookies.iter().filter(|c| Self::matches(c, url)).collect();
+        matched.sort_by_key(|c| std::cmp::Reverse(c.path.len()));
+        (
+            generation,
+            matched
+                .iter()
+                .map(|c| format!("{}={}", c.name, c.value))
+                .collect::<Vec<_>>()
+                .join("; "),
+        )
+    }
+    fn receive_cookies(
+        &self,
+        u: &Url,
+        headers: &mut HeaderMap,
+        sent_generation: Option<&str>,
+        store: bool,
+    ) -> Result<bool> {
+        if !headers.contains_key("set-cookie") {
+            return Ok(false);
+        }
+        let mut guard = self.jar.lock().unwrap();
+        let origin = u.origin().ascii_serialization();
+        let current = guard.web_logins.get(&origin).map(|s| s.generation.as_str());
+        let hidden = sent_generation.is_some() || current.is_some();
+        // A late response after logout or account replacement cannot revive that session.
+        if !store || sent_generation != current {
+            if hidden {
+                headers.remove("set-cookie");
+            }
+            return Ok(hidden);
+        }
+        let mut next = guard.clone();
+        let total = next.len();
+        let jar = next
+            .web_logins
+            .get_mut(&origin)
+            .map_or(&mut next.ordinary, |s| &mut s.cookies);
+        let capacity = 3000 - (total - jar.len());
         for h in headers.get_all("set-cookie") {
             if let Ok(s) = h.to_str() {
                 if let Ok(c) = cookie::Cookie::parse(s.to_string()) {
@@ -205,11 +364,21 @@ impl Network {
                         v["expiresAt"] = json!((t.unix_timestamp().max(0) as u64) * 1000);
                     }
                     // Ignore individual invalid upstream cookies, as browsers do.
-                    let _ = self.put_cookie(u, v);
+                    if let Ok(c) = Self::parse_cookie(u, v) {
+                        Self::upsert(jar, c);
+                        if jar.len() > capacity {
+                            jar.pop();
+                        }
+                    }
                 }
             }
         }
-        Ok(())
+        if hidden {
+            headers.remove("set-cookie");
+        }
+        self.save_jar(&next)?;
+        *guard = next;
+        Ok(hidden)
     }
     async fn rate_limit(&self, cancel: &CancellationToken) -> Result<()> {
         loop {
@@ -226,6 +395,52 @@ impl Network {
             tokio::select! {_=cancel.cancelled()=>return Err(PluginError::cancelled()),_=tokio::time::sleep(Duration::from_millis(50))=>{}}
         }
     }
+    // A pool is bound to validated DNS answers and the effective network policy.
+    // Revalidate periodically; never reuse a pool across proxy/security changes.
+    async fn client(&self, target: &Url, cancel: &CancellationToken) -> Result<reqwest::Client> {
+        let strict = self.strict();
+        let key = format!(
+            "{}:{}:{}",
+            crate::proxy::generation(),
+            strict,
+            target.origin().ascii_serialization()
+        );
+        let mut pools = tokio::select! {
+            _ = cancel.cancelled() => return Err(PluginError::cancelled()),
+            guard = self.clients.lock() => guard,
+        };
+        pools.retain(|_, (created, _)| created.elapsed() < Duration::from_secs(60));
+        if let Some((_, client)) = pools.get(&key) {
+            return Ok(client.clone());
+        }
+        let addrs = tokio::select! {
+            _ = cancel.cancelled() => return Err(PluginError::cancelled()),
+            value = network_policy::resolve_target(target, strict) => value.map_err(|e| PluginError::new("NETWORK", e))?,
+        };
+        let builder = reqwest::Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .referer(false)
+            .connect_timeout(Duration::from_secs(10))
+            .pool_idle_timeout(Duration::from_secs(45))
+            .pool_max_idle_per_host(6)
+            .user_agent("HGhub/HPP-dev")
+            .resolve_to_addrs(target.host_str().unwrap(), &addrs);
+        let client = crate::proxy::configure(builder, &crate::proxy::snapshot())
+            .map_err(|e| PluginError::new("NETWORK", e))?
+            .build()
+            .map_err(|_| PluginError::new("NETWORK", "无法创建 HTTP 客户端"))?;
+        if pools.len() >= 32 {
+            if let Some(oldest) = pools
+                .iter()
+                .min_by_key(|(_, (at, _))| *at)
+                .map(|(key, _)| key.clone())
+            {
+                pools.remove(&oldest);
+            }
+        }
+        pools.insert(key, (Instant::now(), client.clone()));
+        Ok(client)
+    }
     pub async fn request(
         &self,
         raw: &str,
@@ -234,113 +449,40 @@ impl Network {
         body: Option<Vec<u8>>,
         cookies: bool,
         follow: bool,
+        queue: Queue,
         cancel: &CancellationToken,
     ) -> Result<Response> {
         let mut target = self.target(raw)?;
         let initial = target.origin();
         let mut explicit = headers;
         for hop in 0..=5 {
-            if cancel.is_cancelled() {
-                return Err(PluginError::cancelled());
-            }
-            let host = target.host_str().unwrap().to_string();
-            if let Some(until) = self.cooldown.lock().unwrap().get(&host).copied() {
-                if until > Instant::now() {
-                    let mut e = PluginError::new("RATE_LIMITED", "该主机正在冷却");
-                    e.retry_after_sec = Some(until.duration_since(Instant::now()).as_secs().max(1));
-                    return Err(e);
-                }
-            }
-            let addrs = tokio::select! {_=cancel.cancelled()=>return Err(PluginError::cancelled()),v=network_policy::resolve_target(&target,self.strict())=>v.map_err(|e|PluginError::new("NETWORK",e))?};
-            let mut builder = reqwest::Client::builder()
-                .redirect(reqwest::redirect::Policy::none())
-                .referer(false)
-                .connect_timeout(Duration::from_secs(10))
-                .user_agent("HGhub/HPP-dev")
-                .resolve_to_addrs(&host, &addrs);
-            if let Ok(proxy) = std::env::var("HGHUB_PROXY") {
-                if !proxy.trim().is_empty() {
-                    builder = builder.proxy(
-                        reqwest::Proxy::all(proxy)
-                            .map_err(|_| PluginError::new("NETWORK", "代理配置无效"))?,
-                    );
-                }
-            }
-            let client = builder
-                .build()
-                .map_err(|_| PluginError::new("NETWORK", "无法创建 HTTP 客户端"))?;
             if target.origin() != initial {
                 explicit.remove("authorization");
                 explicit.remove("cookie");
             }
-            let mut h = explicit.clone();
-            if cookies && !h.contains_key("cookie") {
-                let mut jar = self
-                    .jar
-                    .lock()
-                    .unwrap()
-                    .iter()
-                    .filter(|c| Self::matches(c, &target))
-                    .cloned()
-                    .collect::<Vec<_>>();
-                jar.sort_by_key(|c| std::cmp::Reverse(c.path.len()));
-                let s = jar
-                    .iter()
-                    .map(|c| format!("{}={}", c.name, c.value))
-                    .collect::<Vec<_>>()
-                    .join("; ");
-                if !s.is_empty() {
-                    h.insert(
-                        "cookie",
-                        HeaderValue::from_str(&s)
-                            .map_err(|_| PluginError::invalid("Cookie 无效"))?,
-                    );
-                }
+            let outgoing = self.outgoing(
+                target.clone(),
+                method.clone(),
+                explicit.clone(),
+                body.clone(),
+                cookies,
+            )?;
+            let response = self.send(outgoing, queue, cancel).await?;
+            if let Some(next) =
+                self.redirect(&target, response.status(), response.headers(), follow, hop)?
+            {
+                target = next;
+            } else {
+                return Ok(response);
             }
-            let mut req = client.request(method.clone(), target.clone()).headers(h);
-            if let Some(b) = &body {
-                req = req.body(b.clone());
-            }
-            let resp = tokio::select! {_=cancel.cancelled()=>return Err(PluginError::cancelled()),v=req.send()=>v.map_err(|_|PluginError::new("NETWORK","HTTP 连接失败"))?};
-            if cookies {
-                self.receive_cookies(&target, resp.headers())?;
-            }
-            if matches!(resp.status().as_u16(), 429 | 503) {
-                if let Some(sec) = resp
-                    .headers()
-                    .get("retry-after")
-                    .and_then(|v| v.to_str().ok())
-                    .and_then(|v| v.parse::<u64>().ok())
-                {
-                    self.cooldown
-                        .lock()
-                        .unwrap()
-                        .insert(host, Instant::now() + Duration::from_secs(sec.min(600)));
-                }
-            }
-            if follow && matches!(resp.status().as_u16(), 301 | 302 | 303 | 307 | 308) {
-                if hop == 5 {
-                    return Err(PluginError::new("NETWORK", "重定向次数超过上限"));
-                }
-                let loc = resp
-                    .headers()
-                    .get("location")
-                    .and_then(|v| v.to_str().ok())
-                    .ok_or_else(|| PluginError::new("NETWORK", "重定向缺少 Location"))?;
-                let next = target
-                    .join(loc)
-                    .map_err(|_| PluginError::new("NETWORK", "重定向地址无效"))?;
-                if target.scheme() == "https" && next.scheme() != "https" {
-                    return Err(PluginError::new("NETWORK", "禁止 HTTPS 降级"));
-                }
-                target = self.target(next.as_str())?;
-                continue;
-            }
-            return Ok(resp);
         }
-        Err(PluginError::new("NETWORK", "重定向失败"))
+        unreachable!("redirect rejects a sixth hop")
     }
-    pub async fn fetch(&self, p: Transfer, cancel: CancellationToken) -> Result<Transfer> {
+    pub async fn fetch(
+        self: &Arc<Self>,
+        p: Transfer,
+        cancel: CancellationToken,
+    ) -> Result<Transfer> {
         let v = p.json();
         let effective = headers(&v["headers"])?;
         let method = v["method"].as_str().unwrap_or("GET");
@@ -371,7 +513,7 @@ impl Network {
                     .collect::<std::collections::BTreeMap<_, _>>()),
             );
         }
-        let key = key.to_string();
+        let key = format!("{}:{}", crate::proxy::generation(), key);
         let mut old = None;
         if eligible {
             if let Some(entry) = self.cache.lock().unwrap().get(&key) {
@@ -394,7 +536,7 @@ impl Network {
                             .and_then(|d| d["status"].as_u64())
                             .is_some_and(|s| s >= 500)
                 }
-                Ok(v) => v.json()["status"].as_u64().is_some_and(|s| s >= 500),
+                Ok((v, _)) => v.json()["status"].as_u64().is_some_and(|s| s >= 500),
             };
             if failed && matches!(method, "GET" | "HEAD") && attempt < retries {
                 let host = v["url"]
@@ -421,7 +563,7 @@ impl Network {
                 }
             }
             if eligible {
-                if let Ok(value) = &result {
+                if let Ok((value, false)) = &result {
                     let response = value.json();
                     let control = response["headers"]["cache-control"]
                         .as_str()
@@ -465,14 +607,15 @@ impl Network {
                     }
                 }
             }
-            return result;
+            return result.map(|(value, _)| value);
         }
     }
-    async fn fetch_once(&self, p: Transfer, cancel: CancellationToken) -> Result<Transfer> {
+    async fn fetch_once(
+        self: &Arc<Self>,
+        p: Transfer,
+        cancel: CancellationToken,
+    ) -> Result<(Transfer, bool)> {
         let v = p.json();
-        let wait = self.gate.acquire();
-        let _permit = tokio::select! {_=cancel.cancelled()=>return Err(PluginError::cancelled()),v=wait=>v.map_err(|_|PluginError::internal("网络队列已关闭"))?};
-        self.rate_limit(&cancel).await?;
         let timeout =
             Duration::from_millis(v["timeoutMs"].as_u64().unwrap_or(15000).clamp(1, 30000));
         let work = async {
@@ -536,29 +679,30 @@ impl Network {
                 }
             }
             let follow = body.is_none() && v["redirect"] != "manual";
-            let mut resp = self
-                .request(
-                    u.as_str(),
+            let max = v["maxBytes"]
+                .as_u64()
+                .unwrap_or(2 * 1024 * 1024)
+                .clamp(1, 8 * 1024 * 1024) as usize;
+            let resp = self
+                .buffered(
+                    u,
                     method,
                     headers,
                     body,
                     v["credentials"] != "omit",
                     follow,
+                    max,
                     &cancel,
                 )
                 .await?;
-            let max = v["maxBytes"]
-                .as_u64()
-                .unwrap_or(2 * 1024 * 1024)
-                .clamp(1, 8 * 1024 * 1024) as usize;
-            let mut meta = json!({"status":resp.status().as_u16(),"ok":resp.status().is_success(),"url":resp.url().as_str(),"headers":{},"setCookies":[],"fromCache":false});
-            for (k, v) in resp.headers() {
+            let mut meta = json!({"status":resp.status.as_u16(),"ok":resp.status.is_success(),"url":resp.url.as_str(),"headers":{},"setCookies":[],"fromCache":false});
+            for (k, v) in &resp.headers {
                 if let Ok(s) = v.to_str() {
                     meta["headers"][k.as_str()] = json!(s);
                 }
             }
             meta["setCookies"] = json!(resp
-                .headers()
+                .headers
                 .get_all("set-cookie")
                 .iter()
                 .filter_map(|v| v.to_str().ok())
@@ -569,27 +713,20 @@ impl Network {
                 .or_else(|| {
                     meta["headers"]["content-type"].as_str().and_then(|s| {
                         s.split(';').find_map(|x| {
-                            x.trim()
-                                .strip_prefix("charset=")
-                                .map(|s| s.trim_matches('"').to_string())
+                            let (name, value) = x.trim().split_once('=')?;
+                            name.trim()
+                                .eq_ignore_ascii_case("charset")
+                                .then(|| value.trim().trim_matches('"').to_string())
                         })
                     })
                 })
                 .unwrap_or_else(|| "utf-8".into());
-            let mut bytes = vec![];
-            while let Some(chunk) = tokio::select! {_=cancel.cancelled()=>return Err(PluginError::cancelled()),v=resp.chunk()=>v.map_err(|_|PluginError::new("NETWORK","响应读取失败"))?}
-            {
-                if bytes.len() + chunk.len() > max {
-                    return Err(PluginError::new("UPSTREAM_ERROR", "响应体超过 maxBytes"));
-                }
-                bytes.extend_from_slice(&chunk);
-            }
             let data = if v["responseType"] == "bytes" {
-                Transfer::Bytes(bytes)
+                Transfer::Bytes(resp.bytes.clone())
             } else {
                 let enc = encoding_rs::Encoding::for_label(charset.as_bytes())
                     .ok_or_else(|| PluginError::invalid("不支持该字符集"))?;
-                let (text, _, _) = enc.decode(&bytes);
+                let (text, _, _) = enc.decode(&resp.bytes);
                 if v["responseType"] == "json" {
                     Transfer::from_json(serde_json::from_str(&text).map_err(|_| {
                         let mut error = PluginError::new("UPSTREAM_CHANGED", "响应不是合法 JSON");
@@ -605,7 +742,7 @@ impl Network {
                 m.insert("data".into(), data);
             }
             result.validate(8 * 1024 * 1024)?;
-            Ok(result)
+            Ok((result, resp.redacted))
         };
         tokio::select! {_=cancel.cancelled()=>Err(PluginError::cancelled()),v=tokio::time::timeout(timeout,work)=>v.unwrap_or_else(|_|Err(PluginError::timeout()))}
     }
@@ -647,3 +784,8 @@ pub fn headers(v: &Value) -> Result<HeaderMap> {
     }
     Ok(out)
 }
+
+#[cfg(test)]
+mod scheduling_tests;
+#[cfg(test)]
+mod web_login_tests;

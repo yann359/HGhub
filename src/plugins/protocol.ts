@@ -98,15 +98,18 @@ export interface Cookie { name: string; value: string; domain?: string; path?: s
 export interface HtmlNode { readonly tag: string; select(selector: string): HtmlNode[]; first(selector: string): HtmlNode | null; text(): string; ownText(): string; attr(name: string): string | null; attrs(): Record<string, string>; html(): string; outerHtml(): string; parent(): HtmlNode | null; children(): HtmlNode[] }
 export type Hash = "md5" | "sha1" | "sha256" | "sha512";
 export interface AesParams { mode: "cbc" | "ecb" | "ctr" | "gcm"; key: Uint8Array; iv?: Uint8Array; padding?: "pkcs7" | "none"; aad?: Uint8Array }
+export interface RsaParams { publicKey: string; padding: "pkcs1" | "oaep-sha1" | "oaep-sha256" }
 export interface HostApi {
   env: HostEnv; endpoint: { readonly current: Endpoint | null; url(path: string): string };
   settings: { get<T>(key: string): T | undefined; getAll(): Record<string, Json> };
   http: { fetch<T = string>(request: HttpRequest): Promise<HttpResponse<T>> };
+  /** get/set operate on ordinary cookies. clear also ends the managed login for the URL origin. */
   cookies: { get(params: { url: string }): Promise<Cookie[]>; set(params: { url: string; cookie: Cookie }): Promise<void>; clear(params?: { url?: string }): Promise<void> };
   storage: { get<T extends TransferValue>(key: string): Promise<T | undefined>; set(key: string, value: TransferValue, options?: { ttlSec?: number }): Promise<void>; delete(key: string): Promise<void>; keys(prefix?: string): Promise<string[]>; clear(): Promise<void> };
-  crypto: { digest(algorithm: Hash, data: string | Uint8Array): Uint8Array; hmac(algorithm: Hash, key: string | Uint8Array, data: string | Uint8Array): Uint8Array; aesEncrypt(params: AesParams, data: Uint8Array): Uint8Array; aesDecrypt(params: AesParams, data: Uint8Array): Uint8Array; rsaEncrypt?(params: { publicKey: string; padding: "pkcs1" | "oaep-sha1" | "oaep-sha256" }, data: Uint8Array): Uint8Array; randomBytes(length: number): Uint8Array; randomUUID(): string };
+  crypto: { digest(algorithm: Hash, data: string | Uint8Array): Uint8Array; hmac(algorithm: Hash, key: string | Uint8Array, data: string | Uint8Array): Uint8Array; aesEncrypt(params: AesParams, data: Uint8Array): Uint8Array; aesDecrypt(params: AesParams, data: Uint8Array): Uint8Array; rsaEncrypt(params: RsaParams, data: Uint8Array): Uint8Array; randomBytes(length: number): Uint8Array; randomUUID(): string };
   codec: { base64Encode(data: string | Uint8Array, options?: { urlSafe?: boolean; pad?: boolean }): string; base64Decode(text: string): Uint8Array; hexEncode(data: string | Uint8Array): string; hexDecode(text: string): Uint8Array; utf8Encode(text: string): Uint8Array; utf8Decode(data: Uint8Array): string; decodeText(data: Uint8Array, charset: string): string };
   html: { parse(html: string): HtmlNode }; log: Record<"debug" | "info" | "warn" | "error", (...args: unknown[]) => void>;
+  /** Native host retains the first-party login session. Read account data with same-origin http.fetch. */
   webview?: { open(params: { url: string; title?: string; doneWhen: { urlPrefix?: string; cookieNames?: string[] }; timeoutSec?: number }): Promise<{ finalUrl: string }> };
   PluginError: new (code: ErrorCode, message?: string, options?: { retryAfterSec?: number; retryable?: boolean; details?: Json; cause?: unknown }) => Error & PluginFailure;
 }

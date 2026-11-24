@@ -55,11 +55,13 @@ HGhub 维护播放器与插件接口，第三方内容的可用性由相应来�
 
 客户端使用 **Rust · Tauri 2 · React · TypeScript** 构建。HPP 插件协议仍在演进，编写插件前请阅读当前支持状态。
 
-## 参与与交流
+## 参与、交流、贡献
 
 欢迎通过 [Issues](https://github.com/Minireel/HGhub/issues) 反馈问题、提出想法，或提交 [Pull Request](https://github.com/Minireel/HGhub/pulls) 参与改进。报告问题时，请附上应用版本、操作系统和复现步骤。
 
-项目由个人维护，维护者会根据时间与精力处理反馈，不承诺第三方插件或站点持续可用。维护范围与权益反馈方式见[项目声明](docs/PROJECT_POLICY.md)。
+项目本身由我独立维护，维护者会根据时间与精力处理反馈，不承诺第三方插件或站点持续可用。维护范围与权益反馈方式见[项目声明](docs/PROJECT_POLICY.md)。
+
+HGhub 欢迎您的贡献，任何一个协议都需要大量、长久的踩坑、试错、经验总结，使它变的越来越完善。您的任何 Issues 与 PR 都对 HGhub 帮助良多！
 
 社区交流：[Linux.DO](https://linux.do/)。
 

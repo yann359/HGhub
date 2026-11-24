@@ -6,6 +6,15 @@ import {spawnSync} from 'node:child_process';
 import AdmZip from 'adm-zip';
 const root=resolve('dist-docs'),config=JSON.parse(await readFile(join(root,'build.json'),'utf8'));
 async function files(dir){const result=[];for(const entry of await readdir(dir,{withFileTypes:true})){const path=join(dir,entry.name);if(entry.isDirectory())result.push(...await files(path));else result.push(path);}return result;}
+const {version:appVersion}=JSON.parse(await readFile('package.json','utf8'));
+for(const [page,versionLine] of [
+ ['index.html',`当前应用 <strong>${appVersion} / HPP `],
+ ['docs/developers/index.html',`当前应用 <strong>${appVersion} / HPP `],
+ ['docs/plugin-protocol/IMPLEMENTATION.html',`应用清单版本为 <strong>${appVersion}</strong>`],
+]){
+ const html=await readFile(join(root,page),'utf8');
+ assert(html.includes(versionLine),`${page} must show the app version from package.json (${appVersion})`);
+}
 const pages=(await files(root)).filter(p=>p.endsWith('.html'));let links=0;
 for(const page of pages){
  const html=await readFile(page,'utf8');

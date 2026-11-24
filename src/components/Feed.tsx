@@ -1,42 +1,49 @@
 import React, { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
-import { fullscreen as enterVideoFullscreen, pictureInPicture } from "../mediaCapabilities";
+import { getCurrentWindow } from "@tauri-apps/api/window";
+import { setMobileOrientation } from "../orientation";
 import { isMobile, platform } from "../environment";
+import { fullscreen as enterVideoFullscreen, pictureInPicture } from "../mediaCapabilities";
 import { fmtTime } from "../format";
 import { useStore } from "../store";
+import { PlaybackWindowActions } from "./DesktopChrome";
 import { Sheet } from "./ui";
 import VideoSurface, { type VideoHandle } from "./VideoSurface";
 import PlayerControls from "./PlayerControls";
 import PlaybackLock from "./PlaybackLock";
-import { setBackHandler } from "../back";
+import { registerBackHandler } from "../back";
+import { useVerticalSwipe } from './useVerticalSwipe';
 import type { PreparedMedia } from "../plugins/client";
-import { IBack, IPip, IBoltF, IChevR, IChevronDown, IChevronUp, IClose, ICommentF, ICompress, IExpand, IList, ILockF, IPauseF, IPlayF, ISearch, ISettings, IStar, IStarF, IVol, IVolMute } from "../icons";
+import { IMore, IHeart, IHeartF, IPip, IBack, IBoltF, IChevR, IChevronDown, IChevronUp, IClose, ICommentF, ICompress, IExpand, IList, ILockF, IPauseF, IPlayF, ISearch, ISettings, IVol, IVolMute } from "../icons";
 
 export type PlayerPanel = "detail" | "episodes" | "comments" | "playback";
+type SurfacePanel = PlayerPanel | "more";
 export interface FeedPresentation {
+  playIntent?: number; mode?: "preview" | "full"; onOpenDetail?: () => void;
   title?: string; author?: string; description?: string; score?: number; poster?: string;
-  episodeLabel?: string; episodeCount?: number; favorite?: boolean; onFavorite?: () => void;
+  episodeLabel?: string; qualityLabel?: string; episodeCount?: number; favorite?: boolean; onFavorite?: () => void;
   panels?: Partial<Record<PlayerPanel, ReactNode>>; social?: ReactNode;
   onPanelChange?: (panel: PlayerPanel) => void;
-  onBack?: () => void; onNext?: () => void; onPrevious?: () => void; onNextEpisode?: () => void;
+  onBack?: () => void; onNext?: () => void; onPrevious?: () => void; onNextEpisode?: () => void; onPreviousEpisode?: () => void;
   queueIndex?: number; total?: number;
+  previousPreview?: { title: string; poster?: string }; nextPreview?: { title: string; poster?: string };
 }
 export interface FeedProps extends FeedPresentation {
-  media: PreparedMedia | null; position: number; active?: boolean; error?: string; onRetry?: () => void;
+  media: PreparedMedia | null; position: number; active?: boolean; preparing?: boolean; error?: string; onRetry?: () => void;
   onPosition: (t: number, duration?: number) => void; onFailure: () => void;
   onPlaying?: () => void; onStopped?: () => void; onEnded?: () => void;
+  onBuffer?: (seconds: number) => void; onWaiting?: () => void;
 }
 /** Restored from 5f88442 Feed: shared desktop chrome and mobile gestures.
  * Plugin adapters own metadata, sessions and persistence; this component owns presentation. */
-export default function Feed({media, position, active=true, error="", onRetry, onPosition, onFailure, onPlaying, onStopped, onEnded,
- title="", author="", description="", score, poster:posterUrl, episodeLabel="", episodeCount=0, favorite=false, onFavorite,
- panels={}, social, onPanelChange, onBack, onNext, onPrevious, onNextEpisode, queueIndex=0, total=1}: FeedProps) {
+export default function Feed({media, position, active=true, preparing=false, error="", onRetry, onPosition, onFailure, onPlaying, onStopped, onEnded, onBuffer, onWaiting,
+ title="", author="", description="", score, poster:posterUrl, episodeLabel="", qualityLabel, episodeCount=0, favorite=false, onFavorite,
+ playIntent=0, mode="full", onOpenDetail, panels={}, social, onPanelChange, onBack, onNext, onPrevious, onNextEpisode, onPreviousEpisode, queueIndex=0, total=1, previousPreview, nextPreview}: FeedProps) {
   const store=useStore(), {muted,setMuted,volume,setVolume}=store;
-  const isDesktop=!isMobile, bottomInset=platform==="ios"&&store.tab==="home"&&!store.stack.length?82:0;
+  const activeRef = useRef(active); activeRef.current = active;
+  const isDesktop=!isMobile, preview=mode==="preview";
   const boxRef=useRef<HTMLDivElement>(null), videoRef=useRef<VideoHandle>(null);
   const lastWheel=useRef(0);
-  const playKey=media?.sessionId || "pending", playUrl=media?.url;
-  const meta={title,author,desc:description,score,comment:undefined as number|undefined};
-  const curEp=episodeLabel, index=0;
+  const playKey=media ? `${media.sessionId}:${media.version}` : "pending", playUrl=media?.url;
   const [hint,setHint]=useState("");
   const toast=(message:string,_kind?:string)=>setHint(message);
   useEffect(()=>{if(!hint)return;const t=window.setTimeout(()=>setHint(""),2200);return()=>window.clearTimeout(t);},[hint]);
@@ -46,14 +53,23 @@ export default function Feed({media, position, active=true, error="", onRetry, o
   const [duration, setDuration] = useState(0);
   const [vsize, setVsize] = useState({ w: 0, h: 0 });
   const [buffered, setBuffered] = useState(0);
-  const [paused, setPaused] = useState(false);
+  const [playback, setPlayback] = useState<{ key: string; phase: 'loading' | 'playing' | 'paused' }>({ key: playKey, phase: 'loading' });
+  const phase = preparing || playback.key !== playKey ? 'loading' : playback.phase;
+  const paused = phase === 'paused', waiting = phase === 'loading';
+  const setPhase = (phase: typeof playback.phase) => setPlayback({ key: playKey, phase });
   const [controlsLocked, setControlsLocked] = useState(false);
   const [rate, setRate] = useState(1);
-  const [waiting, setWaiting] = useState(false);
   const [err, setErr] = useState("");
   /* 取播放地址失败后手动重试：递增即重新触发拉取 */
-  const [panel, setPanel] = useState<PlayerPanel | null>(null);
-  useEffect(() => { if (panel) onPanelChange?.(panel); }, [panel, onPanelChange]);
+  const [panel, setPanel] = useState<SurfacePanel | null>(null);
+  useEffect(() => { if (panel && panel !== "more") onPanelChange?.(panel); }, [panel, onPanelChange]);
+  const resumeAfterOverlay = useRef(false);
+  useEffect(() => {
+    if (!active) resumeAfterOverlay.current = !paused;
+    else if (resumeAfterOverlay.current) { resumeAfterOverlay.current = false; videoRef.current?.play(); }
+  }, [active]);
+  useEffect(() => { if (playIntent && active) videoRef.current?.play(); }, [playIntent]);
+  useEffect(() => { setPanel(null); if (active) store.setClean(false); wake(); }, [mode]);
   /* 续播：拿到时长后再 seek 一次（只对进入时那一条生效） */
   const theater = store.theater;
   const setTheater = store.setTheater;
@@ -105,6 +121,7 @@ export default function Feed({media, position, active=true, error="", onRetry, o
   /* 竖屏下横屏视频适应模式 + 双指无级缩放/平移 */
   const [portraitFit, setPortraitFit] = useState<"contain" | "cover">("contain");
   const [zoom, setZoom] = useState({ scale: 1, x: 0, y: 0, gesturing: false });
+  const swipe = useVerticalSwipe(!isDesktop && active && !controlsLocked && !panel && zoom.scale <= 1.05, preview ? onPrevious : onPreviousEpisode, preview ? onNext : onNextEpisode);
   const pinchRef = useRef<{
     dist0: number; midX0: number; midY0: number; scale0: number; x0: number; y0: number;
   } | null>(null);
@@ -122,9 +139,6 @@ export default function Feed({media, position, active=true, error="", onRetry, o
   const barProgress = barPct ?? (duration ? time / duration : 0);
   /* 是否为横屏视频（16:9 等宽大于高） */
   const isLandscapeVideo = vsize.w > vsize.h && vsize.h > 0;
-  /* 仅当「全屏 + 横屏视频 + 手机系统视口尚未横过来 (!vpLandscape)」时才用 CSS 旋转 90° 兜底；
-     一旦系统屏幕已经横过来了 (vpLandscape === true)，不再叠加 CSS 旋转，彻底解决手机横置后视频反而竖过去的问题！ */
-  const rotated = platform !== "ios" && !isDesktop && fs && isLandscapeVideo && !vpLandscape;
 
   /* 借鉴 stclock1988/hghub-ios (PlayerView.swift keepPlayingThroughTransition)：
      iOS 在横竖屏几何旋转或全屏视图层级切换期间，系统底层 AVPlayer / WebKit 视频层可能被短暂挂起暂停。
@@ -157,8 +171,9 @@ export default function Feed({media, position, active=true, error="", onRetry, o
     const onViewportChange = () => {
       const isLand = window.innerWidth > window.innerHeight;
       setVpLandscape((prev) => {
-        if (prev !== isLand && active) {
-          if (platform !== "ios") { setFs(isLand); keepPlayingThroughTransition(); }
+        if (platform !== "ios" && prev !== isLand && active && !preview) {
+          setFs(isLand);
+          keepPlayingThroughTransition();
         }
         return isLand;
       });
@@ -169,41 +184,42 @@ export default function Feed({media, position, active=true, error="", onRetry, o
       window.removeEventListener("resize", onViewportChange);
       window.removeEventListener("orientationchange", onViewportChange);
     };
-  }, [isDesktop, active, setFs, keepPlayingThroughTransition]);
+  }, [isDesktop, active, preview, setFs, keepPlayingThroughTransition]);
 
-  /* iOS uses system video fullscreen; Android keeps the existing immersive presentation. */
+  /* 进入 / 退出全屏：对横屏视频直接调用原生屏幕方向切换，让手机系统界面真正横过来 */
   const enterFs = useCallback(() => {
     if (platform === "ios") {
       const video = videoRef.current?.el(), container = boxRef.current;
-      if (video && container) void enterVideoFullscreen(video, container).catch(e => toast(e.message));
+      if (video && container) void enterVideoFullscreen(video, container).catch(e => setHint(e.message));
       return;
     }
     keepPlayingThroughTransition();
     setClean(false);
     setFs(true);
-    if (isLandscapeVideo) {
-
-      try {
-        (screen.orientation as unknown as { lock?: (o: string) => Promise<void> })?.lock?.("landscape")?.catch(() => {});
-      } catch { /* ignore */ }
-    }
-  }, [isLandscapeVideo, setClean, setFs, keepPlayingThroughTransition]);
+  }, [setClean, setFs, keepPlayingThroughTransition]);
 
   const exitFs = useCallback(() => {
     keepPlayingThroughTransition();
     setClean(false);
     setFs(false);
-
-    try { screen.orientation?.unlock?.(); } catch { /* ignore */ }
   }, [setClean, setFs, keepPlayingThroughTransition]);
 
-  const go=(delta:number)=>{ if(!active || controlsLocked) return; delta>0 ? onNext?.() : onPrevious?.(); };
+  /* Keep Activity orientation and immersive system bars in step with playback. */
+  useEffect(() => {
+    if (platform !== "android" || preview || !active || !fs || !isLandscapeVideo) return;
+    let live = true;
+    void setMobileOrientation(true).catch(() => { if (live) setHint("无法切换屏幕方向，请重试"); });
+    return () => { live = false; void setMobileOrientation(false).catch(() => {}); };
+  }, [isDesktop, preview, active, fs, isLandscapeVideo]);
+
+
+  const go=(delta:number)=>{ if(!active || controlsLocked || panel) return; if(preview) delta>0 ? onNext?.() : onPrevious?.(); else delta>0 ? onNextEpisode?.() : onPreviousEpisode?.(); };
   const onTimeTick=(t:number)=>{ if(!barScrub.current && gesture.current?.mode!=="scrub")setTime(t); onPosition(t,videoRef.current?.el()?.duration); };
   const onDurationTick=(d:number)=>setDuration(d);
-  useEffect(()=>{setTime(position);setDuration(0);setWaiting(!!media);setErr("");setZoom({scale:1,x:0,y:0,gesturing:false});},[playKey]);
-  useEffect(()=>()=>{clearTapTimer();store.setClean(false);store.setFs(false);},[]);
+  useEffect(()=>{setTime(position);setDuration(0);setErr("");setZoom({scale:1,x:0,y:0,gesturing:false});},[playKey]);
+  useEffect(()=>()=>{clearTapTimer();if(activeRef.current){store.setClean(false);store.setFs(false);}},[]);
   useEffect(()=>{videoRef.current?.rate(effRate);},[effRate,playKey]);
-  useEffect(()=>{if(!panel)return;setBackHandler(()=>{setPanel(null);return true;});return()=>setBackHandler(null);},[panel]);
+  useEffect(()=>{if(!panel || !active)return;return registerBackHandler(()=>{setPanel(null);return true;},10);},[panel,active]);
   useEffect(()=>{const sync=()=>setFullscreen(!!document.fullscreenElement);document.addEventListener("fullscreenchange",sync);return()=>document.removeEventListener("fullscreenchange",sync);},[]);
   const toggleFull=()=>{const el=boxRef.current?.parentElement?.parentElement;if(document.fullscreenElement)void document.exitFullscreen();else void el?.requestFullscreen().catch(()=>toast("当前环境无法进入全屏"));};
   useEffect(()=>{
@@ -215,15 +231,34 @@ export default function Feed({media, position, active=true, error="", onRetry, o
         case "arrowdown":e.preventDefault();go(1);break;case "arrowup":e.preventDefault();go(-1);break;
         case " ":e.preventDefault();videoRef.current?.toggle();break;
         case "arrowleft":e.preventDefault();videoRef.current?.seek(time-5);break;case "arrowright":e.preventDefault();videoRef.current?.seek(time+5);break;
-        case "m":setMuted(v=>!v);break;case "t":setTheater(v=>!v);break;case "f":isDesktop?toggleFull():(fs?exitFs():enterFs());break;
-        case "c":if(panels.comments)setPanel("comments");break;case "e":if(panels.episodes)setPanel("episodes");break;
+        case "pageup":if(!preview){e.preventDefault();onPreviousEpisode?.();}break;case "pagedown":if(!preview){e.preventDefault();onNextEpisode?.();}break;
+        case "m":setMuted(v=>!v);break;case "t":break;case "f":isDesktop?toggleFull():(fs?exitFs():enterFs());break;
+        case "c":if(panels.comments)setPanel("comments");break;case "e":if(preview)onOpenDetail?.();else if(panels.episodes)setPanel("episodes");break;
       }
       wake();
     };window.addEventListener("keydown",key);return()=>window.removeEventListener("keydown",key);
-  },[active,controlsLocked,panel,time,onNext,onPrevious,fs]);
-  const panelContent=panel && <><header className="legacy-panel-heading"><nav>{(["detail","episodes","comments","playback"] as const).filter(p=>panels[p]).map(p=><button key={p} aria-pressed={panel===p} onClick={()=>setPanel(p)}>{{detail:"详情",episodes:"选集",comments:"评论",playback:"播放设置"}[p]}</button>)}</nav><button aria-label="关闭面板" onClick={()=>setPanel(null)}><IClose size={16}/></button></header><div className="legacy-panel-body">{panels[panel]}{panel==="playback"&&media?.playback.subtitles?.some(t=>t.format==="vtt")&&<label className="flex flex-col gap-2 mt-4">字幕<select aria-label="字幕" value={subtitle} onChange={e=>{const n=Number(e.target.value);setSubtitle(n);const v=videoRef.current?.el();if(v)Array.from(v.textTracks).forEach((t,i)=>{t.mode=i===n?"showing":"disabled";});}}><option value={-1}>字幕关闭</option>{media.playback.subtitles.filter(t=>t.format==="vtt").map((t,i)=><option key={t.url} value={i}>{t.label||t.language||`字幕 ${i+1}`}</option>)}</select></label>}</div></>;
+  },[active,controlsLocked,panel,time,onNext,onPrevious,fs,preview,onNextEpisode,onPreviousEpisode]);
+  const showDetails = () => { if (!isDesktop && fs) { setPanel('detail'); return; } setPanel(null); if (onOpenDetail) onOpenDetail(); else setPanel("detail"); };
+  const panelContent=panel && <><header className="legacy-panel-heading"><h2>{{detail:"作品详情",episodes:"选集",comments:"评论",playback:"画质与线路",more:"更多播放选项"}[panel]}</h2><button aria-label="关闭面板" onClick={()=>setPanel(null)}><IClose size={18}/></button></header><div className="legacy-panel-body">
+    {panel === "more" ? <div className="hg-more-menu">
+      <div className="hg-more-shortcuts">
+        <button onClick={showDetails}><IList size={22}/>作品详情</button>
+        {onFavorite && <button onClick={onFavorite} aria-label={favorite?"取消本地收藏":"本地收藏"} aria-pressed={favorite}>{favorite ? <IHeartF size={22}/> : <IHeart size={22}/>}收藏</button>}
+        {panels.playback && <button onClick={()=>setPanel("playback")}><ISettings size={22}/>画质与线路</button>}
+        {panels.comments && <button onClick={()=>setPanel("comments")}><ICommentF size={22}/>评论</button>}
+      </div>
+      <label>播放速度<select aria-label="播放速度" value={rate} onChange={e=>setRate(Number(e.target.value))}>{[.5,.75,1,1.25,1.5,2].map(v=><option key={v} value={v}>{v}×{v===1?" · 正常":""}</option>)}</select></label>
+      <label>音量<input aria-label="音量" type="range" min="0" max="1" step=".01" value={muted?0:volume} onChange={e=>{setMuted(false);setVolume(Number(e.target.value));}}/></label>
+      <button onClick={()=>{setPanel(null);void togglePip();}}><IPip size={19}/>画中画</button>
+      <button onClick={()=>{setPanel(null);lockControls();}}><ILockF size={18}/>锁定播放控制</button>
+      <details><summary>操作说明</summary><p>{isDesktop ? "空格 播放/暂停 · ← → 快退/快进 · M 静音 · F 全屏 · E 选集" : "单击显示/隐藏控制 · 双击播放/暂停 · 横滑调整进度 · 长按临时倍速 · 双指缩放画面"}</p></details>
+      {onBack&&<button onClick={onBack}><IBack size={19}/>退出播放</button>}
+    </div> : panels[panel]}
+    {panel==="playback"&&media?.playback.subtitles?.some(t=>t.format==="vtt")&&<label className="flex flex-col gap-2 mt-4">字幕<select aria-label="字幕" value={subtitle} onChange={e=>{const n=Number(e.target.value);setSubtitle(n);const v=videoRef.current?.el();if(v)Array.from(v.textTracks).forEach((t,i)=>{t.mode=i===n?"showing":"disabled";});}}><option value={-1}>字幕关闭</option>{media.playback.subtitles.filter(t=>t.format==="vtt").map((t,i)=><option key={t.url} value={i}>{t.label||t.language||`字幕 ${i+1}`}</option>)}</select></label>}
+  </div></>;
   /* —— 双指捏合缩放 & 平移（Pinch-to-Zoom & Pan） —— */
   const cancelSingleGesture = () => {
+    swipe.cancel();
     clearTapTimer();
     const g = gesture.current;
     if (g?.timer) window.clearTimeout(g.timer);
@@ -239,7 +274,7 @@ export default function Feed({media, position, active=true, error="", onRetry, o
   };
 
   const onTouchStart = (e: React.TouchEvent<HTMLDivElement>) => {
-    if (isDesktop || controlsLocked) return;
+    if (isDesktop || controlsLocked || panel) return;
     if (e.touches.length === 2) {
       cancelSingleGesture();
       const t0 = e.touches[0];
@@ -270,8 +305,8 @@ export default function Feed({media, position, active=true, error="", onRetry, o
       const nextScale = Math.max(0.85, Math.min(3.5, p.scale0 * (dist / p.dist0)));
       const rawDx = midX - p.midX0;
       const rawDy = midY - p.midY0;
-      const dx = rotated ? rawDy : rawDx;
-      const dy = rotated ? -rawDx : rawDy;
+      const dx = rawDx;
+      const dy = rawDy;
       const maxX = Math.max(0, (nextScale - 1) * window.innerWidth * 0.55);
       const maxY = Math.max(0, (nextScale - 1) * window.innerHeight * 0.55);
       const nextX = Math.max(-maxX, Math.min(maxX, p.x0 + dx));
@@ -294,9 +329,10 @@ export default function Feed({media, position, active=true, error="", onRetry, o
 
   /* —— 长按 2x（上滑锁定） / 横拖定位 / 单击清屏 / 双击暂停 —— */
   const onDown = (e: React.PointerEvent<HTMLDivElement>) => {
-    if (isDesktop || controlsLocked || !active || !e.isPrimary || pinchRef.current || gesture.current || e.button !== 0) return;
+    if (isDesktop || controlsLocked || !active || panel || swipe.locked.current || !e.isPrimary || pinchRef.current || gesture.current || e.button !== 0) return;
+    if ((e.target as HTMLElement).closest('button,a,input,select,textarea,[role=dialog]')) return;
     const el = e.currentTarget;
-    const span = rotated ? (el.clientHeight || window.innerHeight || 1) : (el.clientWidth || 1);
+    const span = el.clientWidth || 1;
     try { el.setPointerCapture(e.pointerId); } catch { /* ignore */ }
     const g = {
       x: e.clientX, y: e.clientY, startX: e.clientX, startY: e.clientY,
@@ -327,12 +363,12 @@ export default function Feed({media, position, active=true, error="", onRetry, o
     if (!g || isDesktop || !e.isPrimary) return;
     const rawDx = e.clientX - g.x;
     const rawDy = e.clientY - g.y;
-    const dx = rotated ? rawDy : rawDx;
-    const dy = rotated ? -rawDx : rawDy;
+    const dx = rawDx;
+    const dy = rawDy;
 
     /* 长按中：上滑 64px 进入「松开即锁定」 */
     if (g.mode === "hold") {
-      const upDist = rotated ? (e.clientX - g.startX) : (g.startY - e.clientY);
+      const upDist = g.startY - e.clientY;
       const armed = upDist > 64;
       if (armed !== lockArmedRef.current) {
         lockArmedRef.current = armed;
@@ -350,10 +386,12 @@ export default function Feed({media, position, active=true, error="", onRetry, o
         clearTapTimer();
         if (g.timer) window.clearTimeout(g.timer);
         g.mode = "pan";
+        swipe.move(dy, boxRef.current?.clientHeight || window.innerHeight);
       }
       return;
     }
 
+    if (g.mode === 'pan') swipe.move(dy, boxRef.current?.clientHeight || window.innerHeight);
     if (g.mode === "scrub") {
       const total = duration || 0;
       if (!total) return;
@@ -394,9 +432,10 @@ export default function Feed({media, position, active=true, error="", onRetry, o
       return;
     }
 
-    if (!cancelled && g.mode === "pan" && e && !fs && !clean && zoom.scale <= 1.05) {
-      const dy = e.clientY - g.startY;
-      if (Math.abs(dy) > 65) go(dy < 0 ? 1 : -1);
+    if (g.mode === 'pan') {
+      if (!cancelled && e) swipe.finish(e.clientY - g.startY, Date.now() - g.t, boxRef.current?.clientHeight || window.innerHeight);
+      else swipe.cancel();
+      return;
     }
     if (cancelled || g.mode !== "idle") return;
     const moveDist = e ? Math.hypot(e.clientX - g.x, e.clientY - g.y) : 0;
@@ -438,6 +477,7 @@ export default function Feed({media, position, active=true, error="", onRetry, o
     const el = boxRef.current;
     if (!el) return undefined;
     const fn = (e: TouchEvent) => {
+      if ((e.target as HTMLElement).closest('[role=dialog]')) return;
       if (holdRef.current || pinchRef.current || fs || e.touches.length >= 2) {
         e.preventDefault();
       }
@@ -447,13 +487,13 @@ export default function Feed({media, position, active=true, error="", onRetry, o
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isDesktop, fs]);
 
-  /* —— 进度条拖动（直接用当前触发元素的 BoundingRect，旋转舞台下按 Y 轴换算） —— */
-  const barPctAt = (barEl: HTMLElement | null, clientX: number, clientY: number) => {
+  /* —— 进度条拖动：系统旋转后的视口仍直接使用 X 轴坐标 —— */
+  const barPctAt = (barEl: HTMLElement | null, clientX: number, _clientY: number) => {
     const r = barEl?.getBoundingClientRect();
     if (!r) return null;
-    const span = rotated ? r.height : r.width;
+    const span = r.width;
     if (!span) return null;
-    const raw = rotated ? (clientY - r.top) / span : (clientX - r.left) / span;
+    const raw = (clientX - r.left) / span;
     return Math.max(0, Math.min(1, raw));
   };
   const barSeekTo = (barEl: HTMLElement | null, clientX: number, clientY: number) => {
@@ -489,8 +529,10 @@ export default function Feed({media, position, active=true, error="", onRetry, o
   };
 
   const togglePip = async () => {
-    try { const video = videoRef.current?.el(); if (video) await pictureInPicture(video); }
-    catch (e) { toast((e as Error).message || "画中画暂不可用"); }
+    const video = videoRef.current?.el();
+    if (!video) return;
+    try { await pictureInPicture(video); }
+    catch (error) { setHint((error as Error).message); }
   };
 
   const effectiveFit: "contain" | "cover" = isDesktop
@@ -500,19 +542,26 @@ export default function Feed({media, position, active=true, error="", onRetry, o
       : (vpLandscape ? "contain" : "cover");
 
   return (
+    <div className="hg-swipe-viewport absolute inset-0 overflow-hidden bg-black">
+      {!isDesktop && swipe.offset !== 0 && [previousPreview, nextPreview].map((item, i) => <div key={i} aria-hidden="true" className="hg-swipe-neighbor" style={{transform:'translate3d(0,' + (swipe.offset + (i ? swipe.height : -swipe.height)) + 'px,0)',transition:swipe.settling?'transform 220ms cubic-bezier(.2,.7,.2,1)':'none'}}>
+        {(item?.poster || posterUrl) && <img src={item?.poster || posterUrl} alt=""/>}<strong>{item?.title || (i ? '加载下一条…' : '上一条')}</strong>
+      </div>)}
     <div
-      className={`hg-player-ui absolute inset-0 overflow-hidden bg-black player-root ${controlsLocked ? "is-locked" : ""} ${isDesktop ? "player-surface" : ""} ${theater ? "is-theater" : ""} ${isDesktop && idle && !paused ? "is-idle" : ""}`}
-      onPointerMove={() => { if (isDesktop) wake(); }}>
+      style={{touchAction:!isDesktop&&!panel?'none':undefined,transform:swipe.offset ? 'translate3d(0,' + swipe.offset + 'px,0)' : undefined,transition:swipe.settling?'transform 220ms cubic-bezier(.2,.7,.2,1)':'none'}}
+      className={`hg-player-ui mode-${mode} absolute inset-0 overflow-hidden bg-black player-root ${controlsLocked ? "is-locked" : ""} ${isDesktop ? "player-surface" : ""} ${theater ? "is-theater" : ""} ${!preview && isDesktop && idle && !paused && !panel ? "is-idle" : ""}`}
+      onTouchStart={onTouchStart} onTouchMove={onTouchMove} onTouchEnd={onTouchEnd} onTouchCancel={onTouchEnd}
+      onPointerDown={onDown} onPointerMove={e => { if (isDesktop) wake(); else onMove(e); }}
+      onPointerUp={e=>onUp(e,false)} onPointerCancel={e=>onUp(e,true)} onLostPointerCapture={e=>onUp(e,true)}>
       <div className="absolute inset-0" inert={controlsLocked}>
       {/* 氛围背景（全屏时隐藏，避免透出封面底图） */}
-      {!fs && (
+      {preview && !fs && (
         <div className="absolute inset-0 scale-110 blur-3xl opacity-25 pointer-events-none">
           {posterUrl && <img src={posterUrl} alt="" className="w-full h-full object-cover" />}
         </div>
       )}
 
       <div ref={boxRef} onWheel={e=>{
-        if(!isDesktop || controlsLocked || panel || fs || Math.abs(e.deltaY)<35 || Date.now()-lastWheel.current<700 || (e.target as HTMLElement).closest("button,input,select"))return;
+        if(!preview || !isDesktop || controlsLocked || panel || fs || Math.abs(e.deltaY)<35 || Date.now()-lastWheel.current<700 || (e.target as HTMLElement).closest("button,input,select"))return;
         lastWheel.current=Date.now();go(e.deltaY>0?1:-1);
       }}
         className="absolute inset-y-0 left-0 overflow-hidden"
@@ -521,23 +570,14 @@ export default function Feed({media, position, active=true, error="", onRetry, o
           const isActive = true;
           return (
             <section
-              key={vid}
+              key="surface"
               style={!isActive && fs ? { display: "none" } : undefined}
               className={`relative w-full h-full snap-start snap-always ${fs && isActive ? "" : "overflow-hidden"}`}>
               {isActive && playUrl ? (
-                <div className={rotated ? "fs-landscape" : (!isDesktop && fs ? "fs-immersive" : "absolute inset-0")}>
+                <div className={!isDesktop && fs ? "fs-immersive" : "absolute inset-0"}>
                   <div
                     className="absolute inset-0 overflow-hidden"
-                    style={{ touchAction: "none" }}
-                    onTouchStart={onTouchStart}
-                    onTouchMove={onTouchMove}
-                    onTouchEnd={onTouchEnd}
-                    onTouchCancel={onTouchEnd}
-                    onPointerDown={onDown}
-                    onPointerMove={onMove}
-                    onPointerUp={(e) => onUp(e, false)}
-                    onPointerCancel={(e) => onUp(e, true)}
-                    onLostPointerCapture={(e) => onUp(e, true)}>
+                    style={{ touchAction: "none" }}>
                     <VideoSurface
                       ref={videoRef}
                       media={media!} position={position}
@@ -557,10 +597,11 @@ export default function Feed({media, position, active=true, error="", onRetry, o
                       onTime={onTimeTick}
                       onDuration={onDurationTick}
                       onSize={(w, h) => setVsize({ w, h })}
-                      onPlaying={() => { setPaused(false); setWaiting(false); setErr(""); onPlaying?.(); }}
-                      onPause={() => { setPaused(true); onStopped?.(); }}
-                      onWaiting={() => setWaiting(true)}
+                      onPlaying={() => { setPhase('playing'); setErr(""); onPlaying?.(); }}
+                      onPause={() => { setPhase('paused'); onStopped?.(); }}
+                      onWaiting={() => { setPhase('loading'); onWaiting?.(); }}
                       onEnded={onEnded} onBuffered={setBuffered}
+                      onBuffer={onBuffer}
                       onError={() => { setErr("播放失败"); onFailure(); }}
                     />
                   </div>
@@ -579,14 +620,14 @@ export default function Feed({media, position, active=true, error="", onRetry, o
                   {/* 暂停 / 缓冲 / 报错恢复 */}
                   {paused && !err && (
                     <div className="absolute inset-0 z-10 flex items-center justify-center pointer-events-none">
-                      <span className="w-[66px] h-[66px] rounded-full flex items-center justify-center backdrop-blur-md"
+                      <button aria-label="播放" onClick={()=>videoRef.current?.play()} className="pointer-events-auto w-[66px] h-[66px] rounded-full flex items-center justify-center backdrop-blur-md"
                         style={{ background: "rgba(0,0,0,.55)", boxShadow: "inset 0 0 0 1px rgba(255,255,255,.12)" }}>
                         <IPlayF size={28} className="hg-ink ml-0.5" />
-                      </span>
+                      </button>
                     </div>
                   )}
                   {waiting && !err && !paused && (
-                    <div className="absolute inset-0 z-10 flex items-center justify-center pointer-events-none"><div className="w-9 h-9 spinner" /></div>
+                    <div role="status" aria-label="正在加载视频" className="absolute inset-0 z-10 flex items-center justify-center pointer-events-none"><div className="w-9 h-9 spinner" /></div>
                   )}
                   {err && (
                     <div className="absolute inset-0 z-30 flex items-center justify-center pointer-events-none">
@@ -609,7 +650,7 @@ export default function Feed({media, position, active=true, error="", onRetry, o
                         else if (rate !== 1 && !holdSpeed) setRate(1);
                       }}
                       className={`absolute left-1/2 -translate-x-1/2 z-30 flex items-center gap-1.5 px-3.5 h-8 rounded-full backdrop-blur-md text-[12px] font-bold elev-2 pressable ${speedLock ? "bg-primary text-on-primary" : "hg-chip hg-gold"}`}
-                      style={{ top: rotated || vpLandscape ? 14 : "calc(var(--sat, 0px) + 54px)" }}>
+                      style={{ top: vpLandscape ? 14 : "calc(var(--sat, 0px) + 54px)" }}>
                       <IBoltF size={13} />
                       {effRate}x {speedLock ? "已锁定 · 点按解除" : holdSpeed ? "倍速中 · 松开恢复" : "倍速"}
                     </button>
@@ -627,11 +668,13 @@ export default function Feed({media, position, active=true, error="", onRetry, o
                   {!isDesktop && fs && !clean && !controlsLocked && (
                     <>
                       <div className="absolute right-4 z-40 flex items-center gap-2"
-                        style={{ top: rotated || vpLandscape ? 14 : "calc(var(--sat, 0px) + 8px)" }}>
+                        style={{ top: vpLandscape ? 14 : "calc(var(--sat, 0px) + 8px)" }}>
                         <button onClick={lockControls} aria-label="锁定播放控制" title="锁定播放控制" aria-pressed={false}
                           className="hg-chip-strong w-9 h-9 rounded-full backdrop-blur-md flex items-center justify-center pressable elev-1">
                           <ILockF size={17} />
                         </button>
+                        <button aria-label="选集" onClick={()=>setPanel("episodes")} className="hg-chip-strong w-9 h-9 rounded-full flex items-center justify-center"><IList size={18}/></button>
+                        <button aria-label="更多" onClick={()=>setPanel("more")} className="hg-chip-strong w-9 h-9 rounded-full flex items-center justify-center"><IMore size={18}/></button>
                         <button onClick={exitFs} aria-label="退出全屏"
                           className="hg-chip-strong w-9 h-9 rounded-full backdrop-blur-md flex items-center justify-center pressable elev-1">
                           <ICompress size={18} />
@@ -641,11 +684,11 @@ export default function Feed({media, position, active=true, error="", onRetry, o
                         <button
                           onClick={() => setZoom({ scale: 1, x: 0, y: 0, gesturing: false })}
                           className="hg-chip-strong absolute left-4 z-40 px-3 h-8 rounded-full backdrop-blur-md text-[11.5px] font-semibold flex items-center gap-1 pressable elev-1"
-                          style={{ top: rotated || vpLandscape ? 14 : "calc(var(--sat, 0px) + 8px)" }}>
-                          还原画面 ({zoom.scale.toFixed(1)}x)
+                          style={{ top: vpLandscape ? 14 : "calc(var(--sat, 0px) + 8px)" }}>
+                          还原缩放 ({zoom.scale.toFixed(1)}x)
                         </button>
                       )}
-                      <div className="absolute inset-x-0 z-30 px-4" style={{ bottom: rotated || vpLandscape ? 46 : "calc(var(--sab, 0px) + 52px)", height: 26 }}>
+                      <div className="absolute inset-x-0 z-30 px-4" style={{ bottom: vpLandscape ? 46 : "calc(var(--sab, 0px) + 52px)", height: 26 }}>
                         <div className="relative h-full" style={{ touchAction: "none" }}
                           onPointerDown={onBarDown} onPointerMove={onBarMove} onPointerUp={onBarUp} onPointerCancel={onBarUp}>
                           <div className={`absolute inset-x-0 bottom-[10px] rounded-full transition-all ${barPct !== null ? "h-[5px]" : "h-[3px]"}`}
@@ -660,7 +703,7 @@ export default function Feed({media, position, active=true, error="", onRetry, o
                         </div>
                       </div>
                       <div className="absolute inset-x-0 z-40 flex items-center gap-3 px-4"
-                        style={{ bottom: rotated || vpLandscape ? 10 : "calc(var(--sab, 0px) + 10px)" }}>
+                        style={{ bottom: vpLandscape ? 10 : "calc(var(--sab, 0px) + 10px)" }}>
                         <button onClick={() => videoRef.current?.toggle()}
                           className="hg-chip shrink-0 w-9 h-9 rounded-full flex items-center justify-center pressable">
                           {paused ? <IPlayF size={18} /> : <IPauseF size={17} />}
@@ -695,7 +738,7 @@ export default function Feed({media, position, active=true, error="", onRetry, o
                     <span>视频暂时无法加载</span>
                     <span className="text-[10.5px] hg-ink-4 max-w-[240px] text-center break-all">{error || err}</span>
                     <button className="px-4 py-1.5 rounded-full hg-chip-strong hg-link text-[12.5px] font-semibold pressable"
-                      onClick={() => { setErr(""); setWaiting(true); onRetry?.(); }}>
+                      onClick={() => { setErr(""); setPhase('loading'); onRetry?.(); }}>
                       重新加载
                     </button>
                   </div>
@@ -703,17 +746,17 @@ export default function Feed({media, position, active=true, error="", onRetry, o
               )}
 
               {/* 渐变压暗，保证文字可读（清屏模式下不加压暗遮罩，只显示纯视频内容） */}
-              {!fs && !clean && (
+              {preview && !fs && !clean && (
                 <div className="absolute inset-0 pointer-events-none"
                   style={{ background: "linear-gradient(0deg, rgba(8,11,15,.86) 0, rgba(11,14,20,.18) 26%, transparent 48%)" }} />
               )}
 
               {/* 竖屏下观看横屏视频：快捷「放大铺满 / 完整显示 / 全屏横屏」与双指缩放复位胶囊 */}
-              {isActive && !fs && !clean && !isDesktop && (isLandscapeVideo || zoom.scale > 1.05) && (
+              {isActive && !fs && !clean && !isDesktop && ((!preview && isLandscapeVideo) || zoom.scale > 1.05) && (
                 <div
                   className="absolute left-1/2 -translate-x-1/2 z-20 flex items-center gap-2"
                   style={{ top: "64%" }}>
-                  {isLandscapeVideo && (
+                  {!preview && isLandscapeVideo && (
                     <>
                       <button
                         type="button"
@@ -740,176 +783,72 @@ export default function Feed({media, position, active=true, error="", onRetry, o
                       </button>
                     </>
                   )}
-                  {!isLandscapeVideo && zoom.scale > 1.05 && (
+                  {(!isLandscapeVideo || preview) && zoom.scale > 1.05 && (
                     <button
                       type="button"
                       onClick={() => setZoom({ scale: 1, x: 0, y: 0, gesturing: false })}
                       className="hg-chip-strong backdrop-blur-md px-3 h-7 rounded-full text-[11.5px] font-semibold flex items-center gap-1 pressable elev-1">
-                      还原画面 ({zoom.scale.toFixed(1)}x)
+                      还原缩放 ({zoom.scale.toFixed(1)}x)
                     </button>
                   )}
                 </div>
               )}
 
-              {!fs && !clean && onBack && <div className={isDesktop ? "desktop-context-header" : "absolute left-3 z-20"} style={isDesktop ? undefined : {top:"calc(var(--sat, 0px) + 6px)"}}><button onClick={onBack} aria-label="返回" className="hg-chip w-9 h-9 rounded-full flex items-center justify-center"><IBack size={20}/></button></div>}
-              {/* 右侧操作栏（移动端）：收藏 / 评论 / 全屏 / 分享
-                  颜色写死不跟主题走：浅色主题下这些字必须仍是白色 */}
-              {!fs && !clean && !isDesktop && (
-                <div className="absolute right-3 z-20 flex flex-col items-center gap-[16px]"
-                  style={{ bottom: `calc(var(--sab, 0px) + ${bottomInset + 92}px)` }}>
-                  {onFavorite && <button onClick={onFavorite} className="flex flex-col items-center gap-1 pressable" aria-pressed={favorite} aria-label={favorite ? "取消本地收藏" : "本地收藏"}>
-                    {favorite ? <IStarF size={27} className="hg-gold" /> : <IStar size={27} className="hg-ink hg-ov-shadow" />}
-                    <span className="text-[10.5px] hg-ink-2 hg-ov-shadow">收藏</span>
-                  </button>}
-                  {panels.comments && <button onClick={() => setPanel("comments")} className="flex flex-col items-center gap-1 pressable" aria-label="评论">
-                    <ICommentF size={26} className="hg-ink hg-ov-shadow" />
-                    <span className="text-[10.5px] hg-ink-2 hg-ov-shadow">评论</span>
-                  </button>}
-                  {platform === "ios" && <button onClick={togglePip} className="flex flex-col items-center gap-1 pressable" aria-label="画中画"><IPip size={24}/><span className="text-[10.5px] hg-ink-2">画中画</span></button>}
-                  <button onClick={enterFs} className="flex flex-col items-center gap-1 pressable" aria-label="全屏">
-                    <IExpand size={26} className="hg-ink hg-ov-shadow" />
-                    <span className="text-[10.5px] hg-ink-2 hg-ov-shadow">全屏</span>
-                  </button>
+              {preview && !clean && <>
+                <header className="hg-preview-heading"><div><span className="hg-preview-selected">为你推荐</span><span className="hg-preview-source">{author}</span></div><button aria-label="搜索" onClick={()=>store.setTab("search")}><ISearch size={21}/></button></header>
+                <div className="hg-preview-actions">
+                  <button aria-label={muted?"取消静音":"静音"} onClick={()=>setMuted(v=>!v)}><span>{muted?<IVolMute size={24}/>:<IVol size={24}/>}</span><small>{muted?"静音":"声音"}</small></button>
+                  {onFavorite&&<button onClick={onFavorite} aria-label={favorite?"取消本地收藏":"本地收藏"} aria-pressed={favorite}><span>{favorite?<IHeartF size={25}/>:<IHeart size={25}/>}</span><small>{favorite?"已收藏":"收藏"}</small></button>}
+                  <button aria-label="作品详情" onClick={showDetails}><span className="hg-info-glyph">ⓘ</span><small>详情</small></button>
                 </div>
-              )}
-
-              {/* 右侧操作栏（桌面） */}
-              {!fs && isDesktop && (
-              <div className="absolute z-20 flex flex-col items-center desktop-social">
-                <div className="desktop-browse-inline">
-                  <button onClick={() => go(-1)} disabled={!onPrevious} aria-label="上一个" title="上一个 ↑">
-                    <IChevronUp size={19} strokeWidth={1.8} />
-                  </button>
-                  <button onClick={() => go(1)} disabled={!onNext} aria-label="下一个" title="下一个 ↓">
-                    <IChevronDown size={19} strokeWidth={1.8} />
-                  </button>
-                  <small>{String(queueIndex + 1).padStart(2, "0")} / {String(total).padStart(2, "0")}</small>
+                <div className="hg-preview-copy"><h1>{title}</h1><div className="hg-preview-meta"><span>{author}</span>{score!==undefined&&<strong>评分 {score.toFixed(1)}</strong>}</div><button onClick={showDetails} className="hg-preview-synopsis"><span>{description || "发现下一部值得看的故事"}</span><b>展开</b></button></div>
+                <div className="hg-preview-footer"><button className="hg-preview-watch" onClick={showDetails}><IPlayF size={17}/><span>观看完整作品{episodeCount ? ` · 共 ${episodeCount} 集` : ""}</span><IChevR size={20}/></button>
+                  <input aria-label="预览进度" type="range" min={0} max={duration||1} step=".1" disabled={!duration} value={Math.min(time,duration||1)} onChange={e=>{videoRef.current?.seek(Number(e.target.value));setTime(Number(e.target.value));}} style={{"--progress":`${barProgress*100}%`} as React.CSSProperties}/>
                 </div>
-
-                {(onFavorite || panels.episodes) && (
-                  <>
-                    {social}
-                    {panels.comments && <button onClick={() => setPanel("comments")} className="flex flex-col items-center gap-1 pressable">
-                      <ICommentF size={27} className="text-white tsh" />
-                      <span className="text-[10.5px] text-white/90 tabular-nums">{meta.comment ?? "评论"}</span>
-                    </button>}
-
-                    {onFavorite && <button onClick={onFavorite} className="flex flex-col items-center gap-1 pressable" aria-pressed={favorite} aria-label={favorite ? "取消本地收藏" : "本地收藏"}>
-                      {favorite ? <IStarF size={27} className="hg-gold" /> : <IStar size={27} className="hg-ink hg-ov-shadow" />}
-                      <span className="text-[10.5px] text-white/90 tabular-nums">{"收藏"}</span>
-                    </button>}
-
-                    {panels.episodes && <button onClick={() => setPanel("episodes")} className="flex flex-col items-center gap-1 pressable">
-                      <IList size={26} className="text-white tsh" />
-                      <span className="text-[10.5px] text-white/90">选集</span>
-                    </button>}
-                  </>
-                )}
-              </div>
-              )}
-
-              {!fs && !clean && panels.playback && <button className="legacy-playback-settings" aria-label="播放设置" onClick={() => setPanel("playback")}><ISettings size={18}/></button>}
-              {/* 桌面：左下信息 */}
-              {!fs && isDesktop && (
-              <div className="desktop-video-meta">
-                <div className="flex items-center gap-2">
-                  <span className="text-[15px] font-bold text-white tsh truncate">@{meta.author}</span>
-                  {episodeCount > 0 && (
-                    <span className="shrink-0 px-1.5 py-px rounded-md text-[10px] font-bold text-white"
-                      style={{ background: "rgba(255,255,255,.16)" }}>
-                      {curEp} / {episodeCount} 集
-                    </span>
-                  )}
-                  {!!meta.score && (
-                    <span className="shrink-0 text-[11px] font-bold hg-gold hg-ov-shadow">{meta.score.toFixed(1)} 分</span>
-                  )}
-                </div>
-
-                <p className="mt-1 text-[13.5px] leading-snug hg-ink-2 hg-ov-shadow clamp-2">{meta.title}</p>
-
-                {/* 描述（单行，点开展开） */}
-                <button onClick={() => setPanel("detail")} className="mt-1 text-left w-full pressable group">
-                  <p className={`text-[11.5px] leading-relaxed hg-ink-4 clamp-1`}>
-                    {meta.desc || "暂无简介"}
-                  </p>
-                  <span className="text-[10.5px] hg-link font-semibold">查看详情</span>
-                </button>
-              </div>
-              )}
-
-              {/* 移动端：标题 + 详情标签 + 进度线（清屏 clean 模式下隐藏） */}
-              {!fs && !clean && !isDesktop && (
-                <div className="absolute inset-x-0 z-20" style={{ bottom: `calc(var(--sab, 0px) + ${bottomInset}px)` }}>
-                  <div className="absolute inset-x-0 bottom-0 h-[190px] pointer-events-none"
-                    style={{ background: "linear-gradient(0deg, rgba(0,0,0,.82) 0%, rgba(0,0,0,.42) 45%, transparent 100%)" }} />
-                  <p className="relative px-4 pb-2 text-[14px] font-semibold leading-snug hg-ink hg-ov-shadow clamp-2">{meta.title}</p>
-                  <div className="relative pt-1.5 pb-2">
-                    <button onClick={() => setPanel("detail")}
-                      className="px-4 flex items-center gap-0.5 text-[10.5px] font-medium hg-ink hg-ov-shadow pressable">
-                      详情 · {curEp}<IChevR size={11} />
-                    </button>
-                    {isActive && (
-                      <div className="mx-4 mt-1.5 relative" style={{ height: 22, touchAction: "none" }}
-                        onPointerDown={onBarDown} onPointerMove={onBarMove} onPointerUp={onBarUp} onPointerCancel={onBarUp}>
-                        <div className={`absolute inset-x-0 top-1/2 -translate-y-1/2 rounded-full transition-all ${barPct !== null ? "h-[5px]" : "h-[2.5px]"}`}
-                          style={{ background: "rgba(255,255,255,.3)" }}>
-                          <div className="h-full rounded-full bg-white"
-                            style={{ width: `${barProgress * 100}%`, transition: barPct !== null ? "none" : "width .25s linear" }} />
-                        </div>
-                        {barPct !== null && (
-                          <div className="absolute left-1/2 -translate-x-1/2 -top-8 px-2.5 py-1 rounded-md hg-chip-strong backdrop-blur-md text-[12px] font-bold tabular-nums whitespace-nowrap">
-                            {fmtTime(barPct * (duration || 0))} / {fmtTime(duration)}
-                          </div>
-                        )}
-                      </div>
-                    )}
-                  </div>
-                </div>
-              )}
+                {isDesktop&&<div className="hg-preview-pager"><button aria-label="上一个" disabled={!onPrevious} onClick={()=>go(-1)}><IChevronUp size={20}/></button><button aria-label="下一个" disabled={!onNext} onClick={()=>go(1)}><IChevronDown size={20}/></button><small>{queueIndex+1} / {total}</small></div>}
+              </>}
+              {!preview && !clean && !fs && !controlsLocked && (title || onBack) && <header className="hg-watch-heading"
+                onMouseDown={e=>{if(isDesktop&&e.button===0&&!(e.target as HTMLElement).closest("button,input,select,a")){e.preventDefault();const win=getCurrentWindow();void (e.detail===2?win.toggleMaximize():win.startDragging()).catch(()=>{});}}}>
+                {onBack&&<button aria-label="返回" onClick={onBack}><IBack size={22}/></button>}
+                <div className="hg-watch-title"><h1>{title}</h1><p>{episodeLabel ? `${/^第/.test(episodeLabel)?episodeLabel:`第 ${episodeLabel} 集`}${episodeCount?` / 共 ${episodeCount} 集`:""}` : author}{qualityLabel ? ` · ${qualityLabel}` : ""}</p></div>
+                {!isDesktop&&<><button aria-label={muted?"取消静音":"静音"} onClick={()=>setMuted(v=>!v)}>{muted?<IVolMute size={23}/>:<IVol size={23}/>}</button>{panels.episodes&&<button aria-label="选集" onClick={()=>setPanel("episodes")}><IList size={24}/></button>}<button aria-label="更多" onClick={()=>setPanel("more")}><IMore size={24}/></button></>}
+                {isDesktop&&store.watching&&<PlaybackWindowActions/>}
+              </header>}
             </section>
           );
         })}
       </div>
 
       {/* 桌面控制条 */}
-      {isDesktop && (
+      {!preview && (isDesktop || (!fs && !clean)) && (
         <PlayerControls
           paused={paused} time={time} duration={duration} buffered={buffered} rate={rate}
           muted={muted} volume={volume} theater={theater} fullscreen={fullscreen}
-          visible={active && (!idle || paused)}
+          visible={active && (!isDesktop || !idle || paused || !!panel)}
           seekEnabled={active && !controlsLocked}
           seekKey={playKey}
-          nextDisabled={!onNextEpisode && !onNext}
-          nextTitle={onNextEpisode ? "下一集" : "下一部"}
+          nextDisabled={!onNextEpisode}
+          nextTitle="下一集"
           onToggle={() => videoRef.current?.toggle()}
           onSeek={(t, source) => { videoRef.current?.seek(t, source); setTime(t); }}
           onRate={(r) => { setRate(r); videoRef.current?.rate(r); }}
           onMute={() => setMuted((m) => !m)}
           onVolume={(v) => setVolume(v)}
+          favorite={favorite} onFavorite={onFavorite}
           onPip={togglePip}
           onLock={lockControls}
-          onTheater={() => setTheater((v) => !v)}
-          onFullscreen={toggleFull}
-          onNext={onNextEpisode || onNext}
+          onTheater={undefined}
+          onFullscreen={isDesktop ? toggleFull : enterFs}
+          onNext={onNextEpisode} onPrevious={onPreviousEpisode}
+          mobile={!isDesktop} onEpisodes={panels.episodes?()=>setPanel("episodes"):undefined} onMore={()=>setPanel("more")}
         />
       )}
 
-      {isDesktop ? <div className={`desktop-dock-panel ${panel ? "is-open" : ""}`}><div className="desktop-dock-inner">{panelContent}</div></div> : <Sheet open={!!panel} onClose={() => setPanel(null)}><div className="flex flex-col" style={{height:"72vh"}}>{panelContent}</div></Sheet>}
+      {isDesktop ? <div className={`desktop-dock-panel ${panel ? "is-open" : ""}`}><div className="desktop-dock-inner">{panelContent}</div></div> : <Sheet open={!!panel && active} z="z-[60]" onClose={() => setPanel(null)}><div role="dialog" aria-modal="true" aria-label="播放面板" className="hg-player-sheet flex flex-col">{panelContent}</div></Sheet>}
       </div>
       {hint&&<div role="status" className="absolute top-1/3 left-1/2 -translate-x-1/2 z-50 px-4 py-2 rounded-full bg-black/70 text-white text-xs pointer-events-none">{hint}</div>}
-      {!isDesktop && !fs && !clean && !controlsLocked && active && (
-        <div className="absolute right-3 z-40 flex items-center gap-2" style={{ top: "calc(var(--sat, 0px) + 6px)" }}>
-          <button onClick={() => setMuted(m => !m)} aria-label={muted ? "取消静音" : "静音"}
-            className="hg-chip w-9 h-9 rounded-full flex items-center justify-center pressable elev-1">
-            {muted ? <IVolMute size={17} /> : <IVol size={17} />}
-          </button>
-          <button onClick={lockControls} aria-label="锁定播放控制" title="锁定播放控制" aria-pressed={false}
-            className="hg-chip w-9 h-9 rounded-full flex items-center justify-center pressable elev-1"><ILockF size={17} /></button>
-          <button onClick={() => store.setTab("search")} aria-label="搜索"
-            className="hg-chip w-9 h-9 rounded-full flex items-center justify-center pressable elev-1"><ISearch size={18} /></button>
-        </div>
-      )}
       {controlsLocked && <PlaybackLock active={active} onUnlock={() => { setControlsLocked(false); wake(); }} />}
+    </div>
     </div>
   );
 }

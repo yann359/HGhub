@@ -17,8 +17,7 @@ export async function testPluginBrowsing({ page, dispatch, root, output, report,
   await page.reload();
   await selectCategorySource(page,names[0]);
   const tabs = page.getByRole("navigation", {name:"分类片源"});
-  const labels = await tabs.getByRole("button").allTextContents();
-  assert(labels.includes(names[0]) && labels.includes(names[1]), "Both sources appear in the provider bar");
+  for (const name of names) await tabs.getByRole("button", { name, exact: true }).waitFor();
   await tabs.getByRole("button", { name: names[0], exact: true }).click();
   await page.getByRole("button", { name: /分页影院甲 · 分类默认 · 0/ }).waitFor();
   await page.locator(".legacy-category-heading").first().click();
@@ -43,8 +42,7 @@ export async function testPluginBrowsing({ page, dispatch, root, output, report,
   assert.equal(await page.getByRole("button", { name: /分类fast · / }).count(), 0, "Filter starts a separate cursor chain");
   const metadataCalls = (await call(ids[0])).filter(c => c.method === "catalog.getCategories").length;
   await rail.getByRole("button", { name: "搜索", exact: true }).click();
-  await page.getByRole("button", { name: "搜索来源与筛选", exact: true }).click();
-  await page.getByLabel("搜索范围", { exact: true }).selectOption("single");
+  await page.locator(".refined-scope-segments").getByRole("button", { name: "单个来源", exact: true }).click();
   await page.locator(".hpp-scope").getByRole("radio", { name: names[0], exact: true }).check();
   const search = async q => { await page.getByRole("textbox", { name: "搜索所有插件", exact: true }).fill(q); await page.locator(".hpp-search").getByRole("button", { name: "搜索", exact: true }).click(); };
   await search("slow"); await search("fast");
@@ -56,7 +54,7 @@ export async function testPluginBrowsing({ page, dispatch, root, output, report,
   assert.equal(await page.locator(".legacy-search-poster:visible").count(), 23);
   assert.equal(await page.getByRole("button", { name: /搜索slow/ }).count(), 0);
   await page.screenshot({ path: join(output, "browsing-pagination.png") });
-  await page.getByLabel("搜索范围", { exact: true }).selectOption("multiple");
+  await page.locator(".refined-scope-segments").getByRole("button", { name: "多个来源", exact: true }).click();
   await page.locator(".hpp-scope").getByRole("checkbox", { name: names[1], exact: true }).check();
   await search("partial");
   await page.getByRole("button", { name: `${names[1]} · 0`, exact: true }).waitFor();

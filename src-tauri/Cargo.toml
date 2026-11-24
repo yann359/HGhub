@@ -1,6 +1,6 @@
 [package]
 name = "huangguo-client"
-version = "0.0.1"
+version = "0.0.5"
 description = "HGhub · 插件视频播放器"
 authors = ["HGhub"]
 license = "PolyForm-Noncommercial-1.0.0"
@@ -28,6 +28,23 @@ serde_json = "1"
 time = { version = "0.3", features = ["formatting"] }
 hghub-hpp = { path = "crates/hpp" }
 
+tokio = { version = "1", features = ["sync"] }
+
+[target.'cfg(any(target_os = "windows", target_os = "android"))'.dependencies]
+futures-util = "0.3"
+tokio-util = "0.7"
+
+[target.'cfg(target_os = "windows")'.dependencies]
+wry = "0.57"
+webview2-com = "0.39"
+windows = { version = "0.62", features = ["Win32_Foundation", "Win32_Graphics_Gdi", "Win32_UI_WindowsAndMessaging", "Win32_UI_HiDpi", "Win32_System_LibraryLoader", "Win32_System_SystemServices"] }
+
+[target.'cfg(any(target_os = "windows", target_os = "ios"))'.dependencies]
+tempfile = "3"
+
+[target.'cfg(target_os = "android")'.dependencies]
+uuid = { version = "1", features = ["v4"] }
+
 [patch.crates-io]
 rquickjs-sys = { path = "vendor/rquickjs-sys" }
 
@@ -45,6 +62,10 @@ objc2-app-kit = { version = "0.3", default-features = false, features = [
   "NSWindow",
 ] }
 objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSGeometry"] }
+
+# Avoid invalid incremental object references on filesystems without hard links.
+[profile.dev]
+incremental = false
 
 [profile.release]
 panic = "abort"

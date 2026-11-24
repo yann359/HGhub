@@ -10,7 +10,7 @@ import zipfile
 from pathlib import Path
 
 
-def validate(path, bundle_id, version):
+def validate(path, bundle_id, version, bundled_dir=None):
     with zipfile.ZipFile(path) as archive:
         if archive.testzip():
             raise ValueError("ZIP CRC verification failed")
@@ -60,6 +60,15 @@ def validate(path, bundle_id, version):
         assert not any(n.endswith(".dSYM/") for n in names), "Unexpected debug symbols in payload"
         assert not any(n.startswith(root + "_CodeSignature/") for n in names), "Expected an unsigned app"
         assert root + "embedded.mobileprovision" not in names, "Unexpected provisioning profile"
+        bundled = []
+        if bundled_dir:
+            manifest_file = bundled_dir / "manifest.json"
+            manifest_bytes = manifest_file.read_bytes()
+            assert manifest_bytes in binary, "Bundled plugin manifest is missing from the executable"
+            for plugin in json.loads(manifest_bytes)["plugins"]:
+                code = (bundled_dir / plugin["url"]).read_bytes()
+                assert code in binary, f"Bundled plugin missing: {plugin['id']}"
+                bundled.append({"id": plugin["id"], "version": plugin["version"], "sha256": hashlib.sha256(code).hexdigest()})
         with open(path, "rb") as source:
             digest = hashlib.file_digest(source, "sha256").hexdigest()
         result = {"bundleId": bundle_id, "version": version, "minimumOS": info["MinimumOSVersion"],
@@ -69,7 +78,7 @@ def validate(path, bundle_id, version):
                   "sdk": ".".join(map(str, (sdk_version >> 16, (sdk_version >> 8) & 255, sdk_version & 255))),
                   "files": len(names), "bytes": Path(path).stat().st_size,
                   "sha256": digest,
-                  "deviceTested": False, "checks": "ZIP CRC, Payload, plist, executable mode, Mach-O, device platform, ATS, orientations, dev URL, encryption, signature"}
+                  "bundledPlugins": bundled, "deviceTested": False, "checks": "ZIP CRC, Payload, plist, executable mode, Mach-O, device platform, ATS, orientations, dev URL, encryption, signature"}
         try:
             result["sourceCommit"] = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
         except (OSError, subprocess.CalledProcessError):
@@ -83,7 +92,8 @@ if __name__ == "__main__":
     parser.add_argument("--bundle-id", required=True)
     parser.add_argument("--version", required=True)
     parser.add_argument("--manifest", required=True)
+    parser.add_argument("--bundled-dir", type=Path)
     args = parser.parse_args()
-    result = validate(args.ipa, args.bundle_id, args.version)
+    result = validate(args.ipa, args.bundle_id, args.version, args.bundled_dir)
     Path(args.manifest).write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
     print(json.dumps(result, indent=2))

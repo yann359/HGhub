@@ -5,8 +5,8 @@ import AdmZip from 'adm-zip';
 const root=resolve('.'),out=resolve('dist-docs');
 const base=process.env.HGHUB_DOCS_BASE||'/HGhub/';
 if(!/^\/(?:[A-Za-z0-9_-]+\/)*$/.test(base))throw Error('Invalid HGHUB_DOCS_BASE');
-const protocol=(await readdir('docs/plugin-protocol')).filter(n=>/^0[1-9]-.*\.md$/.test(n)||['README.md','IMPLEMENTATION.md'].includes(n));
-const guides=(await readdir('docs/developers')).filter(n=>n.endsWith('.md'));
+const protocol=(await readdir('docs/plugin-protocol')).filter(n=>/^0[1-9]-.*\.md$/.test(n)||['README.md','IMPLEMENTATION.md'].includes(n)).sort();
+const guides=(await readdir('docs/developers')).filter(n=>n.endsWith('.md')).sort();
 const sources=[...guides.map(n=>'docs/developers/'+n),...protocol.map(n=>'docs/plugin-protocol/'+n)];
 const dest=file=>file.replace(/\.md$/,'.html');
 const escape=text=>text.replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
@@ -35,7 +35,10 @@ for(const name of guides.filter(n=>!['index.md','agent.md','deployment.md'].incl
  const guide=(await readFile('docs/developers/'+name,'utf8')).replaceAll('../plugin-protocol/','protocol/').replaceAll('../../examples/','../assets/').replaceAll('../../downloads/protocol.ts','../assets/protocol.ts');
  zip.addFile('hghub-plugin-dev/references/'+name,Buffer.from(guide));
 }
-for(const name of protocol)await add('docs/plugin-protocol/'+name,'references/protocol/'+name);
+for(const name of protocol){
+ const text=(await readFile('docs/plugin-protocol/'+name,'utf8')).replaceAll('../developers/','../');
+ zip.addFile('hghub-plugin-dev/references/protocol/'+name,Buffer.from(text));
+}
 await writeFile(resolve(out,'downloads/hghub-plugin-dev.zip'),zip.toBuffer());
 await cp('tools/plugin-dev/install.py',resolve(out,'downloads/install.py'));
 await cp('src/plugins/protocol.ts',resolve(out,'downloads/protocol.ts'));

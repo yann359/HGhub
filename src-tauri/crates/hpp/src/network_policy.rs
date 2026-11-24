@@ -184,6 +184,23 @@ pub fn check_addresses_with_mode(addrs: &[SocketAddr], strict: bool) -> Result<(
     Ok(())
 }
 
+fn validated_addresses(
+    mut addrs: Vec<SocketAddr>,
+    strict: bool,
+) -> Result<Vec<SocketAddr>, String> {
+    if strict
+        && addrs
+            .iter()
+            .any(|addr| addr.is_ipv4() && allowed_ip(addr.ip()))
+    {
+        // DNS may return a blocked IPv6 alongside a usable IPv4 (including proxy FakeIP).
+        // Pin only the permitted answers; never connect to the blocked IPv6.
+        addrs.retain(|addr| addr.is_ipv4() || allowed_ip(addr.ip()));
+    }
+    check_addresses_with_mode(&addrs, strict)?;
+    Ok(addrs)
+}
+
 /// 与浏览器一致优先 IPv6：连接器以首个地址的协议族为首选，另一族在其失败后（Happy Eyeballs）兜底。
 /// 普通排序会把 IPv4 排在前面；共享 IPv4 出口被上游接口限流时，请求会挂起或返回 502/503，
 /// 而同一网络下浏览器走 IPv6 一切正常。
@@ -207,8 +224,7 @@ pub async fn resolve_target(url: &Url, strict: bool) -> Result<Vec<SocketAddr>, 
     };
     sort_ipv6_first(&mut addrs);
     addrs.dedup();
-    check_addresses_with_mode(&addrs, strict)?;
-    Ok(addrs)
+    validated_addresses(addrs, strict)
 }
 
 pub fn redirect_target(current: &Url, location: &str) -> Result<Url, String> {
@@ -366,6 +382,47 @@ mod tests {
             redirect_target(&current, "/next").unwrap().as_str(),
             "https://example.com/next"
         );
+    }
+
+    #[test]
+    fn fakeip_ipv4_can_connect_when_dns_also_returns_benchmark_ipv6() {
+        let addrs = vec![
+            "[2001:2::65]:443".parse().unwrap(),
+            "198.18.0.71:443".parse().unwrap(),
+        ];
+        assert_eq!(
+            validated_addresses(addrs, true).unwrap(),
+            vec!["198.18.0.71:443".parse().unwrap()]
+        );
+        assert!(validated_addresses(vec!["[2001:2::65]:443".parse().unwrap()], true).is_err());
+        assert!(validated_addresses(
+            vec![
+                "198.18.0.71:443".parse().unwrap(),
+                "192.168.1.1:443".parse().unwrap()
+            ],
+            true
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn public_ipv4_can_connect_when_dns_also_returns_reserved_ipv6() {
+        let addrs = vec![
+            "[2001::68f4:2ef6]:443".parse().unwrap(),
+            "104.244.43.231:443".parse().unwrap(),
+        ];
+        assert_eq!(
+            validated_addresses(addrs, true).unwrap(),
+            vec!["104.244.43.231:443".parse().unwrap()]
+        );
+        assert!(validated_addresses(
+            vec![
+                "127.0.0.1:443".parse().unwrap(),
+                "[::1]:443".parse().unwrap()
+            ],
+            true
+        )
+        .is_err());
     }
 
     #[test]

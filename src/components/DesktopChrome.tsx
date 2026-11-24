@@ -3,11 +3,26 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { useStore, type Tab } from "../store";
 import { APP_VERSION } from "../environment";
 import {
-  IClose, IGrid, IGridF, IHome, IHomeF, IMinus, IMoon, IRestore, ISearch, ISettings, ISidebar, ICpu,
+  IPin, IClose, IGrid, IGridF, IHome, IHomeF, IMinus, IMoon, IRestore, ISearch, ISettings, ISidebar, ICpu,
   ISquare, ISun, IUser, IUserF, Logo,
 } from "../icons";
 
 const appWindow = () => getCurrentWindow();
+
+export function PlaybackWindowActions() {
+  const { platform } = useStore();
+  const [pinned, setPinned] = useState(false), [pending, setPending] = useState(false), [error, setError] = useState("");
+  useEffect(() => { let live = true; void appWindow().isAlwaysOnTop().then(v => { if(live) setPinned(v); }).catch(()=>{}); return()=>{live=false;}; }, []);
+  const togglePin = async () => { setPending(true); setError(""); try { await appWindow().setAlwaysOnTop(!pinned); setPinned(!pinned); } catch { setError("窗口置顶设置失败，请重试"); } finally { setPending(false); } };
+  return <div className="win-caption-buttons hg-watch-window-actions">
+    {error&&<span role="status" className="hg-window-error">{error}</span>}
+    <button aria-label={pinned?"取消窗口置顶":"窗口置顶"} aria-pressed={pinned} disabled={pending} onClick={()=>void togglePin()}><IPin size={17}/></button>
+    {platform !== "macos" && <>
+    <button aria-label="最小化" onClick={() => appWindow().minimize().catch(() => {})}><IMinus size={16}/></button>
+    <button aria-label="最大化或还原" onClick={() => appWindow().toggleMaximize().catch(() => {})}><ISquare size={14}/></button>
+    <button className="win-close" aria-label="关闭窗口" onClick={() => appWindow().close().catch(() => {})}><IClose size={17}/></button></>}
+  </div>;
+}
 
 export function DesktopTitleBar({ collapsed, onToggle }: { collapsed: boolean; onToggle: () => void }) {
   const { theme, setTheme, setTab, platform } = useStore();

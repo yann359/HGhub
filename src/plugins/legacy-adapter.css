@@ -60,3 +60,22 @@
 .legacy-search-page .hpp-more{padding:16px 0;font-size:12px}
 @media(min-width:768px){.legacy-search-grid{grid-template-columns:repeat(3,minmax(0,1fr))}}
 @media(min-width:1280px){.legacy-search-grid{grid-template-columns:repeat(4,minmax(0,1fr))}}
+
+/* Plugin management: keep identity, status and actions readable on narrow screens. */
+.hpp-plugin-heading>div{min-width:0;overflow-wrap:anywhere}
+.hpp-plugin-heading p,.hpp-plugin-footer>span{color:var(--p-mut);opacity:1}
+.hpp-plugin-footer>div{flex-wrap:wrap}
+.hpp-forms .hpp-account,.hpp-forms .hpp-actions{margin:0;padding:16px;border:1px solid var(--surface-border);border-radius:10px}
+.hpp-action-list{display:grid;gap:4px}
+.hpp-page .hpp-action-list button{display:flex;justify-content:space-between;align-items:center;gap:12px;width:100%;min-height:44px;text-align:left}
+.hpp-action-list small{display:block;color:var(--p-mut);font-weight:normal;margin-top:3px}
+
+/* Native inputs retain their keyboard behaviour inside the shared filter chips. */
+.browse-filters:empty{display:none}
+.browse-filters fieldset{min-width:0;gap:6px}
+.browse-filters legend{float:none;margin-bottom:6px;font-size:13px;font-weight:600;opacity:1}
+.browse-filters label,.browse-filters button{position:relative;padding:7px 12px;min-height:34px;border-radius:var(--r-ctl);background:var(--p-s2);cursor:pointer;font-size:13px}
+.browse-filters label input{position:absolute;inset:0;width:100%;height:100%;opacity:0;cursor:pointer}
+.browse-filters label:has(:checked),.browse-filters button[aria-pressed=true]{background:var(--p-tint);color:var(--p-primary);box-shadow:inset 0 0 0 1px currentColor}
+.browse-filters label:has(:focus-visible){outline:2px solid var(--p-primary);outline-offset:2px}
+.legacy-search-grid{align-items:start;gap:12px 10px;grid-template-columns:repeat(auto-fill,minmax(min(140px,100%),1fr))}

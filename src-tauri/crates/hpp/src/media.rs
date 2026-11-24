@@ -7,7 +7,7 @@ use crate::{
 };
 use axum::{
     body::Body,
-    extract::{Path, State},
+    extract::{Path, Query, State},
     http::{HeaderMap, Method, Response, StatusCode},
     routing::get,
     Router,
@@ -19,7 +19,7 @@ use serde_json::{json, Value};
 use std::{
     collections::{BTreeMap, HashMap},
     sync::{
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicUsize, Ordering},
         Arc, Mutex, Weak,
     },
     time::Duration,
@@ -27,18 +27,39 @@ use std::{
 use tokio_util::sync::CancellationToken;
 
 const MAX_RESOURCE: usize = 8 * 1024 * 1024;
+static MEDIA_TRANSFERS: once_cell::sync::Lazy<Arc<tokio::sync::Semaphore>> =
+    once_cell::sync::Lazy::new(|| Arc::new(tokio::sync::Semaphore::new(6)));
+static IMAGE_TRANSFERS: once_cell::sync::Lazy<Arc<tokio::sync::Semaphore>> =
+    once_cell::sync::Lazy::new(|| Arc::new(tokio::sync::Semaphore::new(2)));
+mod preload;
+mod refresh;
+mod subtitles;
 #[derive(Default)]
 pub struct MediaSessions {
     sessions: Mutex<HashMap<String, Arc<Session>>>,
     base: tokio::sync::OnceCell<String>,
     shutdown: CancellationToken,
+    preload_gate: tokio::sync::Mutex<()>,
+    foreground: Arc<AtomicUsize>,
+    refreshing: Mutex<HashMap<String, tokio::sync::watch::Sender<Option<Result<PreparedMedia>>>>>,
+    refresh_waiters: Mutex<HashMap<String, CancellationToken>>,
+}
+struct Foreground(Arc<AtomicUsize>);
+impl Drop for Foreground {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::AcqRel);
+    }
 }
 struct Session {
+    version: u64,
+    refresh_input: Option<refresh::Input>,
+    prepared: Mutex<Option<PreparedMedia>>,
     playback: AtomicBool,
     providers: BTreeMap<String, (Arc<Network>, String)>,
     cancel: CancellationToken,
     resources: Mutex<Vec<Resource>>,
     expires_at: Option<u64>,
+    cache: preload::Cache,
 }
 #[derive(Clone, PartialEq)]
 struct Resource {
@@ -46,12 +67,14 @@ struct Resource {
     url: String,
     headers: Value,
     kind: String,
+    subtitle_format: Option<String>,
     transforms: Value,
     credential_origin: String,
 }
-#[derive(Serialize)]
+#[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PreparedMedia {
+    pub version: u64,
     pub session_id: String,
     pub url: String,
     pub format: String,
@@ -60,7 +83,7 @@ pub struct PreparedMedia {
     /// Display-only choices; never expose provider URLs, headers or transform keys.
     pub choices: Value,
 }
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct PlaybackSelection {
     pub stream_index: usize,
     pub resolver_id: Option<String>,
@@ -95,13 +118,20 @@ impl MediaSessions {
             .values()
             .any(|s| !s.cancel.is_cancelled() && s.playback.load(Ordering::Acquire))
     }
-    pub fn activity(&self, id: &str, playing: bool) -> Result<()> {
+    pub fn activity(&self, id: &str, playing: bool, version: Option<u64>) -> Result<()> {
         let all = self.sessions.lock().unwrap();
         let session = all
             .get(id)
             .ok_or_else(|| PluginError::new("NOT_FOUND", "媒体会话已释放"))?;
-        session.playback.store(playing, Ordering::Release);
+        if version.is_none_or(|v| v == session.version) {
+            session.playback.store(playing, Ordering::Release);
+        }
         Ok(())
+    }
+    pub fn cancel_preload(&self, id: &str) {
+        if let Some(s) = self.sessions.lock().unwrap().get(id) {
+            s.cache.cancel();
+        }
     }
     pub fn release_plugin(&self, id: &str) {
         self.sessions.lock().unwrap().retain(|_, s| {
@@ -229,6 +259,7 @@ fn resource(provider: &str, stream: &Value, headers: Value, kind: &str) -> Resul
         url,
         headers,
         kind: kind.into(),
+        subtitle_format: (kind == "subtitle").then(|| stream["format"].as_str().unwrap().into()),
         transforms: stream["transforms"].clone(),
     })
 }
@@ -272,11 +303,15 @@ impl PluginManager {
             ),
         )]);
         let session = Arc::new(Session {
+            version: 0,
+            refresh_input: None,
+            prepared: Mutex::new(None),
             playback: AtomicBool::new(false),
             providers,
             cancel: CancellationToken::new(),
             resources: Mutex::new(vec![]),
             expires_at: None,
+            cache: Default::default(),
         });
         let id = uuid::Uuid::new_v4().to_string();
         let mut urls = vec![];
@@ -364,7 +399,14 @@ impl PluginManager {
             });
         let result = tokio::time::timeout(
             budget,
-            self.prepare_inner(plugin_id, method, params, selection, request_id.clone()),
+            self.prepare_inner(
+                plugin_id,
+                method,
+                params,
+                selection,
+                request_id.clone(),
+                None,
+            ),
         )
         .await;
         if result.is_err() {
@@ -379,7 +421,14 @@ impl PluginManager {
         params: Value,
         selection: PlaybackSelection,
         request_id: String,
+        replacement: Option<(String, Arc<Session>)>,
     ) -> Result<PreparedMedia> {
+        let mut refresh_input = refresh::Input {
+            plugin_id: plugin_id.into(),
+            method: method.into(),
+            params: params.clone(),
+            selection: selection.clone(),
+        };
         let base = MediaSessions::start(self).await?;
         let mut providers = BTreeMap::new();
         providers.insert(
@@ -547,7 +596,8 @@ impl PluginManager {
             playback["streams"] = resolved["streams"].clone();
         }
         if selected["kind"] == "external" {
-            let mut e = PluginError::new("UNSUPPORTED", "该流需要外部播放器");
+            choices["external"] = json!({"url":selected["url"],"app":selected["external"]["app"],"mime":selected["external"]["mime"],"expiresAt":playback["expiresAt"]});
+            let mut e = PluginError::new("INTERACTION_REQUIRED", "该流需要在外部应用中打开");
             e.playback_choices = Some(choices);
             return Err(e);
         }
@@ -567,12 +617,30 @@ impl PluginManager {
                 "不支持对完整普通视频执行字节变换",
             ));
         }
+        if let Some(server) = choices["source"]["serverId"].as_str() {
+            refresh_input.params["serverId"] = json!(server);
+        }
+        if let Some(resolver) = choices["resolver"]["pluginId"].as_str() {
+            refresh_input.selection.resolver_id = Some(resolver.into());
+            refresh_input.selection.resolver_host =
+                choices["resolverRoute"]["host"].as_str().map(String::from);
+            if let Some(server) = choices["resolver"]["serverId"].as_str() {
+                refresh_input
+                    .selection
+                    .resolver_servers
+                    .insert(resolver.into(), server.into());
+            }
+        }
         let session = Arc::new(Session {
-            playback: AtomicBool::new(true),
+            version: replacement.as_ref().map_or(0, |(_, old)| old.version + 1),
+            refresh_input: Some(refresh_input),
+            prepared: Mutex::new(None),
+            playback: AtomicBool::new(params["reason"] != "preload"),
             providers,
             cancel: CancellationToken::new(),
             resources: Mutex::new(vec![]),
             expires_at: playback["expiresAt"].as_u64(),
+            cache: Default::default(),
         });
         let root = session.register(resource(
             &provider,
@@ -580,16 +648,37 @@ impl PluginManager {
             effective_headers(&self.meta(&provider).await?, &selected["headers"])?,
             if format == "hls" { "playlist" } else { "media" },
         )?)?;
-        let id = uuid::Uuid::new_v4().to_string();
+        let id = replacement
+            .as_ref()
+            .map_or_else(|| uuid::Uuid::new_v4().to_string(), |(id, _)| id.clone());
         let mut subtitles = vec![];
-        for (owner, mut track) in subtitle_providers {
+        let default_track = subtitle_providers
+            .iter()
+            .position(|(owner, track)| {
+                owner == &provider && track["format"] != "ass" && track["default"] == true
+            })
+            .or_else(|| {
+                subtitle_providers
+                    .iter()
+                    .position(|(_, track)| track["format"] != "ass" && track["default"] == true)
+            });
+        for (track_index, (owner, mut track)) in subtitle_providers.into_iter().enumerate() {
+            if track["format"] == "ass" {
+                continue;
+            }
             let index = session.register(resource(
                 &owner,
                 &track,
                 effective_headers(&self.meta(&owner).await?, &track["headers"])?,
                 "subtitle",
             )?)?;
-            track["url"] = json!(format!("{base}/hpp/{id}/{index}"));
+            track["url"] = json!(format!("{base}/hpp/{id}/{index}?v={}", session.version));
+            if track["format"] == "srt" {
+                track["format"] = json!("vtt");
+            }
+            if track.get("default").is_some() {
+                track["default"] = json!(default_track == Some(track_index));
+            }
             if let Some(o) = track.as_object_mut() {
                 o.remove("headers");
             }
@@ -598,21 +687,40 @@ impl PluginManager {
         playback["subtitles"] = json!(subtitles);
         playback.as_object_mut().unwrap().remove("streams");
         let mut all = self.sessions.sessions.lock().unwrap();
-        if all.len() >= 64 {
+        if replacement.is_none() && all.len() >= 64 {
             return Err(PluginError::new(
                 "RATE_LIMITED",
                 "媒体会话数量超限，请关闭闲置播放",
             ));
         }
-        all.insert(id.clone(), session);
-        Ok(PreparedMedia {
+        if let Some((_, old)) = &replacement {
+            if old.cancel.is_cancelled()
+                || !all
+                    .get(&id)
+                    .is_some_and(|current| Arc::ptr_eq(current, old))
+            {
+                return Err(PluginError::cancelled());
+            }
+            session
+                .playback
+                .store(old.playback.load(Ordering::Acquire), Ordering::Release);
+        }
+        let prepared = PreparedMedia {
+            version: session.version,
             session_id: id.clone(),
-            url: format!("{base}/hpp/{id}/{root}"),
+            url: format!("{base}/hpp/{id}/{root}?v={}", session.version),
             format,
             provider_id: provider,
             playback,
             choices,
-        })
+        };
+        *session.prepared.lock().unwrap() = Some(prepared.clone());
+        all.insert(id, session);
+        if let Some((_, old)) = replacement {
+            old.cancel.cancel();
+            old.cache.cancel();
+        }
+        Ok(prepared)
     }
 }
 async fn preflight() -> Response<Body> {
@@ -636,6 +744,7 @@ fn cors(mut r: Response<Body>) -> Response<Body> {
 async fn serve_resource(
     State(weak): State<Weak<PluginManager>>,
     Path((id, index)): Path<(String, usize)>,
+    Query(query): Query<HashMap<String, String>>,
     method: Method,
     headers: HeaderMap,
 ) -> Response<Body> {
@@ -651,6 +760,21 @@ async fn serve_resource(
             .ok_or_else(|| PluginError::new("NOT_FOUND", "媒体会话已释放"))?;
         if session.cancel.is_cancelled() {
             return Err(PluginError::cancelled());
+        }
+        let version = query.get("v").map(|v| v.parse::<u64>()).transpose().map_err(|_| PluginError::invalid("媒体版本无效"))?.unwrap_or(0);
+        if version != session.version { return Err(PluginError::cancelled()); }
+        let pending = manager.sessions.refreshing.lock().unwrap().get(&id).map(|task| task.subscribe());
+        if let Some(mut pending) = pending {
+            loop {
+                if let Some(result) = pending.borrow().clone() {
+                    result?;
+                    return Err(PluginError::cancelled());
+                }
+                tokio::select! {
+                    _ = session.cancel.cancelled() => return Err(PluginError::cancelled()),
+                    changed = pending.changed() => changed.map_err(|_| PluginError::internal("媒体刷新缺少结果"))?,
+                }
+            }
         }
         for (owner, (_, revision)) in &session.providers {
             if !manager.revision(owner).await.is_ok_and(|v| v == *revision) {
@@ -670,7 +794,29 @@ async fn serve_resource(
             .get(index)
             .cloned()
             .ok_or_else(|| PluginError::new("NOT_FOUND", "媒体资源不存在"))?;
-        proxy(&manager, &session, &id, resource, method, headers).await
+        let (gate, foreground) = if resource.kind == "image" {
+            (&*IMAGE_TRANSFERS, None)
+        } else {
+            // Foreground media can interrupt speculative I/O, not just jump a queue.
+            let sessions = manager.sessions.sessions.lock().unwrap();
+            manager.sessions.foreground.fetch_add(1, Ordering::AcqRel);
+            for candidate in sessions.values() {
+                candidate.cache.cancel();
+            }
+            (&*MEDIA_TRANSFERS, Some(Foreground(manager.sessions.foreground.clone())))
+        };
+        let permit = tokio::select! {
+            _ = session.cancel.cancelled() => return Err(PluginError::cancelled()),
+            value = gate.clone().acquire_owned() => value.map_err(|_| PluginError::cancelled())?,
+        };
+        let response = proxy(&manager, &session, &id, resource, method, headers).await?;
+        let (parts, body) = response.into_parts();
+        // Keep the permit for the streamed body, not only until response headers.
+        let stream = body.into_data_stream().map(move |chunk| {
+            let _keep = (&permit, &foreground);
+            chunk
+        });
+        Ok(Response::from_parts(parts, Body::from_stream(stream)))
     }
     .await;
     cors(result.unwrap_or_else(|e| {
@@ -695,9 +841,24 @@ async fn proxy(
     method: Method,
     incoming: HeaderMap,
 ) -> Result<Response<Body>> {
+    if let Some(response) = preload::cached(manager, session, id, &r, &method, &incoming).await? {
+        return Ok(response);
+    }
+    proxy_upstream(manager, session, id, r, method, incoming, MAX_RESOURCE).await
+}
+async fn proxy_upstream(
+    manager: &Arc<PluginManager>,
+    session: &Arc<Session>,
+    id: &str,
+    r: Resource,
+    method: Method,
+    incoming: HeaderMap,
+    buffer_limit: usize,
+) -> Result<Response<Body>> {
     let network = &session.providers[&r.provider].0;
     let transform = r.transforms.get(&r.kind).filter(|v| !v.is_null());
-    let buffered = r.kind == "playlist" || transform.is_some();
+    let buffered =
+        r.kind == "playlist" || r.subtitle_format.as_deref() == Some("srt") || transform.is_some();
     let mut headers = network::headers(&r.headers)?;
     if origin(&r.url)? != r.credential_origin {
         headers.remove("authorization");
@@ -723,6 +884,7 @@ async fn proxy(
             None,
             true,
             true,
+            network::Queue::Media,
             &session.cancel,
         ),
     )
@@ -767,8 +929,8 @@ async fn proxy(
         let Some(chunk) = chunk else {
             break;
         };
-        if data.len() + chunk.len() > MAX_RESOURCE {
-            return Err(PluginError::invalid("媒体资源超过 8 MiB"));
+        if data.len() + chunk.len() > buffer_limit {
+            return Err(PluginError::invalid("媒体资源超过缓冲预算"));
         }
         data.extend_from_slice(&chunk);
     }
@@ -846,10 +1008,14 @@ async fn proxy(
                 kind: kind.into(),
                 ..r.clone()
             })?;
-            Ok(format!("{base}/hpp/{id}/{index}"))
+            Ok(format!("{base}/hpp/{id}/{index}?v={}", session.version))
         })?
         .into_bytes();
         content_type = "application/vnd.apple.mpegurl".into();
+    }
+    if r.subtitle_format.as_deref() == Some("srt") {
+        data = subtitles::srt_to_vtt(&data, &content_type)?;
+        content_type = "text/vtt; charset=utf-8".into();
     }
     bounded_response(data, &content_type, method, &incoming)
 }

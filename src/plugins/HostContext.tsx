@@ -1,6 +1,7 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
 import { onPluginAuthFailure, onPluginAuthSuccess, pluginCommand, pluginError, type InstalledPlugin } from "./client";
 import type { MediaItem } from "./protocol";
+import { clearMetadataCache } from './metadataCache';
 import { emptyUpdateState, pendingUpdates, tickPluginUpdates, type UpdateState } from "./updateClient";
 
 export interface LocalProgress { pluginId: string; mediaId: string; playlistId?: string; episodeId: string; positionSec: number; durationSec?: number; at: number }
@@ -62,11 +63,11 @@ export function HostProvider({ children }: { children: React.ReactNode }) {
   }, []);
   useEffect(() => {
     void reload(); void refreshLibrary().catch(e => setError(pluginError(e)));
-    const changed = () => { void reload(); void refreshLibrary().catch(e => setError(pluginError(e))); };
+    const changed = () => { clearMetadataCache(); void reload(); void refreshLibrary().catch(e => setError(pluginError(e))); };
     window.addEventListener("hpp.changed", changed); return () => window.removeEventListener("hpp.changed", changed);
   }, [reload, refreshLibrary]);
-  useEffect(() => onPluginAuthFailure(f => { if (!f.silent) setAuthPrompt(f); }), []);
-  useEffect(() => onPluginAuthSuccess(id => setAuthPrompt(old => old?.id === id ? null : old)), []);
+  useEffect(() => onPluginAuthFailure(f => { clearMetadataCache(); if (!f.silent) setAuthPrompt(f); }), []);
+  useEffect(() => onPluginAuthSuccess(id => { clearMetadataCache(); setAuthPrompt(old => old?.id === id ? null : old); }), []);
   const sources = useMemo(() => plugins.filter(p => p.enabled && p.meta.kind !== "resolver" && ["ready", "unloaded"].includes(p.status) && (prefs.mature || !p.meta.mature)).sort((a,b) => {
     const index = (id: string) => { const n=prefs.order.indexOf(id);return n<0?10000:n; }; return index(a.meta.id)-index(b.meta.id);
   }), [plugins, prefs]);

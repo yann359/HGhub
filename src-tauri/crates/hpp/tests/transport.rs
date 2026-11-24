@@ -38,6 +38,8 @@ async fn fixture(
             }else{out=out.header("content-length",bytes.len());bytes.into()}
         },
         "/image"=>"fixture-image".into(),
+        "/legacy"=>return out.header("content-type","text/html; Charset=GBK").body(Body::from(&b"\xb5\xda1\xbc\xaf"[..])).unwrap(),
+        "/subtitle"=>{out=out.header("content-type","application/octet-stream");"1\r\n00:00:01,000 --> 00:00:02,500\r\n字幕\r\n".into()},
         _=>"fixture-resource".into()
     };
     out.body(if method == Method::HEAD {
@@ -64,6 +66,310 @@ fn manager(dir: &tempfile::TempDir) -> Arc<PluginManager> {
 }
 fn params() -> Value {
     json!({"mediaId":"one","episodeId":"ep1","playlistId":"main","reason":"play","codecs":["h264"]})
+}
+
+#[tokio::test]
+async fn http_text_uses_response_charset_case_insensitively() {
+    let (base, _, task) = server().await;
+    let dir = tempfile::tempdir().unwrap();
+    let m = manager(&dir);
+    let source = format!(
+        r#"
+      export const meta={{id:'fixture.charset',name:'Charset',version:'1.0.0',protocol:1,allowInsecureHttp:true}};
+      export default hg=>({{media:{{getDetail(){{}},resolvePlayback(){{}}}},
+        search:{{async search(){{const r=await hg.http.fetch({{url:'{base}/legacy'}});return {{items:[{{id:'x',title:r.data}}]}};}}}}
+      }});
+    "#
+    );
+    m.import_code(source, None, false).await.unwrap();
+    let value = m
+        .call(
+            "fixture.charset",
+            "search.search",
+            json!({"query":"x"}),
+            "charset".into(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(value["items"][0]["title"], "第1集");
+    task.abort();
+}
+
+#[tokio::test]
+async fn shared_refresh_switches_resources_atomically_and_cancels_independent_waiters() {
+    let (base, seen, task) = server().await;
+    let dir = tempfile::tempdir().unwrap();
+    let m = manager(&dir);
+    let source = format!(
+        r#"
+      export const meta={{id:'fixture.refresh',name:'Refresh',version:'1.0.0',protocol:1,allowInsecureHttp:true}};
+      export default hg=>({{media:{{getDetail({{id}}){{return {{id,title:id,playlists:[{{id:'main',episodes:[]}}]}};}},
+        async resolvePlayback(p,ctx){{
+          if(p.reason==='refresh')await hg.http.fetch({{url:'{base}/slow',signal:ctx.signal}});
+          if(p.reason==='refresh' && p.mediaId==='fail' && !await hg.storage.get('failed')){{await hg.storage.set('failed',true);throw new hg.PluginError('NETWORK','fixture failure');}}
+          if(p.mediaId==='hls')return {{streams:[{{url:'{base}/hls/master.m3u8',format:'hls'}}]}};
+          return {{streams:[{{url:'{base}/movie.mp4?generation='+p.reason,format:'progressive'}}]}};
+        }}
+      }}}});
+    "#
+    );
+    m.import_code(source, None, false).await.unwrap();
+    let media = m
+        .prepare_media(
+            "fixture.refresh",
+            params(),
+            0,
+            None,
+            "prepare-refresh".into(),
+        )
+        .await
+        .unwrap();
+    let client = reqwest::Client::new();
+    let (a, b) = tokio::join!(
+        m.refresh_media(&media.session_id, 0, "refresh-a".into()),
+        m.refresh_media(&media.session_id, 0, "refresh-b".into())
+    );
+    let a = a.unwrap();
+    let b = b.unwrap();
+    assert_eq!(a.session_id, media.session_id);
+    assert_eq!(a.version, 1);
+    assert_eq!(a.url, b.url);
+    assert_eq!(
+        seen.lock()
+            .unwrap()
+            .iter()
+            .filter(|(p, _)| p == "/slow")
+            .count(),
+        1
+    );
+    assert_eq!(client.get(&media.url).send().await.unwrap().status(), 410);
+    assert_eq!(
+        client
+            .get(&a.url)
+            .send()
+            .await
+            .unwrap()
+            .text()
+            .await
+            .unwrap(),
+        "0123456789"
+    );
+    let late = m
+        .refresh_media(&media.session_id, 0, "late".into())
+        .await
+        .unwrap();
+    assert_eq!(late.version, 1);
+    assert_eq!(
+        seen.lock()
+            .unwrap()
+            .iter()
+            .filter(|(p, _)| p == "/slow")
+            .count(),
+        1
+    );
+    let (cancelled, remaining, _) = tokio::join!(
+        m.refresh_media(&media.session_id, 1, "cancelled-waiter".into()),
+        m.refresh_media(&media.session_id, 1, "remaining-waiter".into()),
+        async {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            m.cancel("cancelled-waiter").await;
+        }
+    );
+    assert_eq!(cancelled.err().unwrap().code, "CANCELLED");
+    let remaining = remaining.unwrap();
+    assert_eq!(remaining.version, 2);
+    assert_eq!(
+        seen.lock()
+            .unwrap()
+            .iter()
+            .filter(|(p, _)| p == "/slow")
+            .count(),
+        2
+    );
+    let (released, _) = tokio::join!(
+        m.refresh_media(&media.session_id, 2, "released".into()),
+        async {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            m.sessions.release(&media.session_id);
+        }
+    );
+    assert_eq!(released.err().unwrap().code, "CANCELLED");
+    assert_eq!(
+        client.get(&remaining.url).send().await.unwrap().status(),
+        404
+    );
+    assert!(!m.sessions.has_playback());
+    let failed = m
+        .prepare_media(
+            "fixture.refresh",
+            json!({"mediaId":"fail","episodeId":"ep","reason":"play"}),
+            0,
+            None,
+            "prepare-fail".into(),
+        )
+        .await
+        .unwrap();
+    let (a, b) = tokio::join!(
+        m.refresh_media(&failed.session_id, 0, "fail-a".into()),
+        m.refresh_media(&failed.session_id, 0, "fail-b".into())
+    );
+    assert_eq!(a.err().unwrap().code, "NETWORK");
+    assert_eq!(b.err().unwrap().code, "NETWORK");
+    assert_eq!(client.get(&failed.url).send().await.unwrap().status(), 200);
+    assert_eq!(
+        m.refresh_media(&failed.session_id, 0, "retry".into())
+            .await
+            .unwrap()
+            .version,
+        1
+    );
+    let hls = m
+        .prepare_media(
+            "fixture.refresh",
+            json!({"mediaId":"hls","episodeId":"ep","reason":"play"}),
+            0,
+            None,
+            "prepare-hls".into(),
+        )
+        .await
+        .unwrap();
+    let old = client
+        .get(&hls.url)
+        .send()
+        .await
+        .unwrap()
+        .text()
+        .await
+        .unwrap();
+    let child = old.lines().find(|line| line.starts_with("http")).unwrap();
+    let updated = m
+        .refresh_media(&hls.session_id, 0, "refresh-hls".into())
+        .await
+        .unwrap();
+    assert_eq!(client.get(child).send().await.unwrap().status(), 410);
+    let new = client
+        .get(&updated.url)
+        .send()
+        .await
+        .unwrap()
+        .text()
+        .await
+        .unwrap();
+    let child = new.lines().find(|line| line.starts_with("http")).unwrap();
+    assert!(child.ends_with("?v=1"));
+    assert_eq!(client.get(child).send().await.unwrap().status(), 200);
+    m.sessions
+        .activity(&hls.session_id, false, Some(0))
+        .unwrap();
+    assert!(m.sessions.has_playback());
+    let (abandoned, _) = tokio::join!(
+        m.refresh_media(&hls.session_id, 1, "abandoned".into()),
+        async {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            m.cancel("abandoned").await;
+        }
+    );
+    assert_eq!(abandoned.err().unwrap().code, "CANCELLED");
+    tokio::time::sleep(Duration::from_millis(350)).await;
+    assert_eq!(
+        client.get(&updated.url).send().await.unwrap().status(),
+        200,
+        "cancelled refresh must not commit later"
+    );
+    m.sessions.release(&hls.session_id);
+    let (disabled, _) = tokio::join!(
+        m.refresh_media(&failed.session_id, 1, "disable-refresh".into()),
+        async {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            m.set_enabled("fixture.refresh", false).await.unwrap();
+        }
+    );
+    assert_eq!(disabled.err().unwrap().code, "CANCELLED");
+    assert!(!m.sessions.has_playback());
+    task.abort();
+}
+
+#[tokio::test]
+async fn srt_tracks_use_declared_format_and_isolate_failures() {
+    let (base, seen, task) = server().await;
+    let dir = tempfile::tempdir().unwrap();
+    let m = manager(&dir);
+    let playback = json!({"streams":[{"url":format!("{base}/movie.mp4"),"format":"progressive"}],
+        "subtitles":[
+            {"url":format!("{base}/subtitle"),"format":"srt","language":"zh","label":"中文","default":true},
+            {"url":format!("{base}/subtitle"),"format":"vtt","language":"en","label":"Original"},
+            {"url":format!("{base}/bad"),"format":"srt","label":"坏字幕"}]});
+    let source = SOURCE.replace(
+        "{streams:[{url:\"https://media.example/movie.mp4\",format:\"progressive\"}]}",
+        &playback.to_string(),
+    );
+    m.import_code(source, None, false).await.unwrap();
+    let media = m
+        .prepare_media("fixture.source", params(), 0, None, "subtitle".into())
+        .await
+        .unwrap();
+    let tracks = media.playback["subtitles"].as_array().unwrap();
+    assert_eq!(tracks.len(), 3);
+    assert_eq!(tracks[0]["format"], "vtt");
+    assert_eq!(tracks[0]["language"], "zh");
+    assert_eq!(tracks[0]["label"], "中文");
+    assert_eq!(tracks[0]["default"], true);
+    assert_ne!(tracks[0]["url"], tracks[1]["url"]);
+    let client = reqwest::Client::new();
+    let url = tracks[0]["url"].as_str().unwrap();
+    let response = client.get(url).send().await.unwrap();
+    assert_eq!(
+        response.headers()["content-type"],
+        "text/vtt; charset=utf-8"
+    );
+    let converted = response.bytes().await.unwrap();
+    assert_eq!(
+        &converted[..],
+        "WEBVTT\n\n00:00:01.000 --> 00:00:02.500\n字幕\n\n".as_bytes()
+    );
+    let head = client.head(url).send().await.unwrap();
+    assert_eq!(
+        head.headers()["content-length"],
+        converted.len().to_string()
+    );
+    assert!(head.bytes().await.unwrap().is_empty());
+    let range = client
+        .get(url)
+        .header("range", "bytes=0-5")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(range.status(), 206);
+    assert_eq!(range.text().await.unwrap(), "WEBVTT");
+    assert!(seen
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|(path, _)| path == "/subtitle")
+        .all(|(_, headers)| !headers.contains_key("range")));
+    assert_eq!(
+        client
+            .get(tracks[2]["url"].as_str().unwrap())
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        502
+    );
+    assert_eq!(
+        client
+            .get(&media.url)
+            .send()
+            .await
+            .unwrap()
+            .text()
+            .await
+            .unwrap(),
+        "0123456789"
+    );
+    m.sessions.release(&media.session_id);
+    assert_eq!(client.get(url).send().await.unwrap().status(), 404);
+    task.abort();
 }
 fn http_source(base: &str) -> String {
     SOURCE.replace("if(query===\"spin\")",&format!(r#"

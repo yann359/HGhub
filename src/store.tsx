@@ -21,6 +21,7 @@ function useApplication() {
   const [tab, setTabRaw] = useState<Tab>("home"), [stack, setStack] = useState<Page[]>([]);
   const [muteOnStartup, setMuteOnStartup] = useState(() => read<boolean>("hpp.startMuted", true) !== false);
   const [volume, setVolume] = useState(() => { const v = read("hpp.volume", 0.7); return typeof v === "number" && Number.isFinite(v) ? Math.min(1, Math.max(0, v)) : 0.7; });
+  const [watching, setWatching] = useState(false);
   const [muted, setMuted] = useState(muteOnStartup);
   const [theater, setTheater] = useState(false), [fs, setFs] = useState(false), [clean, setClean] = useState(false);
   const [strictSecurity, setStrict] = useState(true), [strictSecurityReady, setSecurityReady] = useState(false), [securityPending, setPending] = useState(false);
@@ -35,7 +36,7 @@ function useApplication() {
   const push = useCallback((p: PageInput) => setStack(old => [...old, { ...p, key: crypto.randomUUID() }]), []);
   const replace = useCallback((p: PageInput) => setStack(old => [...old.slice(0, -1), { ...p, key: crypto.randomUUID() }]), []);
   const pop = useCallback(() => setStack(old => old.slice(0, -1)), []);
-  return { platform, theme, themeMode, setTheme, tab, setTab, stack, push, replace, pop, muteOnStartup, setMuteOnStartup, volume, setVolume, muted, setMuted, theater, setTheater, fs, setFs, clean, setClean, strictSecurity, strictSecurityReady, securityPending, setStrictSecurity, error };
+  return { watching, setWatching, platform, theme, themeMode, setTheme, tab, setTab, stack, push, replace, pop, muteOnStartup, setMuteOnStartup, volume, setVolume, muted, setMuted, theater, setTheater, fs, setFs, clean, setClean, strictSecurity, strictSecurityReady, securityPending, setStrictSecurity, error };
 }
 const Context = createContext<ReturnType<typeof useApplication>>(null!);
 export const useStore = () => useContext(Context);

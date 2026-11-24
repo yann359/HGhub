@@ -160,3 +160,24 @@ html[data-platform="ios"] .text-\[14px\] { font-size: 0.875rem; }
 html[data-platform="ios"] .text-\[15px\] { font-size: 0.9375rem; }
 html[data-platform="ios"] .text-\[15\.5px\] { font-size: 0.96875rem; }
 html[data-platform="ios"] .text-\[26px\] { font-size: 1.625rem; }
+
+
+/* Leave the home video full bleed while keeping its controls above the floating bar. */
+.plat-ios .hg-preview-footer {
+  left: max(12px, env(safe-area-inset-left));
+  right: max(12px, env(safe-area-inset-right));
+  bottom: calc(76px + var(--sab));
+  padding-inline: 16px;
+  border: 1px solid #ffffff24;
+  border-radius: 20px;
+  background: #11151a9c;
+  -webkit-backdrop-filter: blur(24px);
+  backdrop-filter: blur(24px);
+}
+.plat-ios .hg-preview-copy { bottom: calc(176px + var(--sab)); }
+.plat-ios .hg-preview-actions { bottom: calc(172px + var(--sab)); }
+.plat-ios .hg-preview-heading {
+  padding-left: max(20px, env(safe-area-inset-left));
+  padding-right: max(20px, env(safe-area-inset-right));
+}
+.plat-ios .hpp-home-errors { bottom: calc(83px + var(--sab)); }

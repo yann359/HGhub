@@ -59,7 +59,7 @@ impl PluginManager {
             async move {
                 let started = Instant::now();
                 let url = format!("{}/", e["url"].as_str().unwrap().trim_end_matches('/'));
-                let result = tokio::time::timeout(Duration::from_secs(8), network.request(&url, Method::GET, HeaderMap::new(), None, false, true, &cancel)).await;
+                let result = tokio::time::timeout(Duration::from_secs(8), network.request(&url, Method::GET, HeaderMap::new(), None, false, true, crate::network::Queue::Api, &cancel)).await;
                 let mut item = json!({"id":e["id"],"url":e["url"],"latencyMs":started.elapsed().as_millis() as u64});
                 match result {
                     Ok(Ok(response)) => { item["status"] = json!(response.status().as_u16()); item["ok"] = json!(response.status().is_success()); },

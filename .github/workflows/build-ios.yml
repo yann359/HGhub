@@ -1,4 +1,4 @@
-name: HGhub iOS Liquid Glass
+name: HGhub iOS Full
 on:
   workflow_dispatch:
   push:
@@ -17,6 +17,7 @@ jobs:
       CARGO_TERM_COLOR: always
       CARGO_BUILD_JOBS: 3
       IPHONEOS_DEPLOYMENT_TARGET: '16.4'
+      HGHUB_IOS_IPA_NAME: HGhub_iOS_Full.ipa
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
@@ -49,12 +50,12 @@ jobs:
       - name: Initialize iOS project
         run: set -o pipefail; pnpm tauri ios init --ci 2>&1 | tee artifacts/logs/ios-init.log
       - name: Build ARM64 Release and validate unsigned IPA
-        run: bash scripts/build-ios-unsigned.sh 1.0.0
+        run: bash scripts/build-ios-unsigned.sh 1.1.0
       - name: Upload verified installation package
         if: success()
         uses: actions/upload-artifact@v4
         with:
-          name: HGhub-iOS-LiquidGlass-v1.0.0
+          name: HGhub-iOS-Full
           path: |
             artifacts/*.ipa
             artifacts/*manifest.json
@@ -70,5 +71,43 @@ jobs:
             artifacts/logs/
             build_output/*.xcresult
             src-tauri/gen/apple/project.yml
+          if-no-files-found: warn
+          retention-days: 30
+
+  simulator:
+    runs-on: xcode-27
+    timeout-minutes: 55
+    env:
+      CARGO_TERM_COLOR: always
+      CARGO_BUILD_JOBS: 3
+      HGHUB_IOS_SIMULATOR: '1'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.34.9
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-ios-sim
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+          key: ios-27-simulator
+      - name: Install locked frontend dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Initialize iOS project
+        run: pnpm tauri ios init --ci
+      - name: Build and launch in iOS Simulator
+        run: bash scripts/build-ios-unsigned.sh 1.1.0
+      - name: Upload simulator diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: HGhub-iOS-simulator
+          path: artifacts/logs/
           if-no-files-found: warn
           retention-days: 30

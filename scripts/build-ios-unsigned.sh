@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
-VERSION="${1:-1.0.0}"
+VERSION="${1:-1.1.0}"
 [[ "$(uname -s)" == Darwin ]] || { echo 'Xcode on macOS is required'; exit 1; }
 [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || exit 1
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -28,6 +28,19 @@ for ((attempt=0; attempt<240; attempt++)); do
   sleep 1
 done
 [[ -s "$ADDR_FILE" ]] || { echo 'Timed out waiting for Tauri options server'; exit 1; }
+if [[ "${HGHUB_IOS_SIMULATOR:-0}" == 1 ]]; then
+  xcodebuild build \
+    -project src-tauri/gen/apple/huangguo-client.xcodeproj \
+    -scheme huangguo-client_iOS -configuration release \
+    -sdk iphonesimulator -destination 'generic/platform=iOS Simulator' \
+    -derivedDataPath "$ROOT/build_output" \
+    -resultBundlePath "$ROOT/build_output/ios-simulator.xcresult" \
+    ARCHS=arm64 ONLY_ACTIVE_ARCH=NO \
+    CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" DEVELOPMENT_TEAM="" \
+    | tee artifacts/logs/xcodebuild-simulator.log
+  bash scripts/smoke-ios-simulator.sh "$ROOT/build_output/Build/Products/release-iphonesimulator/HGhub.app" "$IDENTIFIER"
+  exit
+fi
 xcodebuild build \
   -project src-tauri/gen/apple/huangguo-client.xcodeproj \
   -scheme huangguo-client_iOS -configuration release \
@@ -44,8 +57,8 @@ trap 'rm -rf "$STAGE"; cleanup' EXIT
 mkdir "$STAGE/Payload"
 # Preserve executable modes, bundle directories and symlinks.
 ditto "$APP" "$STAGE/Payload/HGhub.app"
-IPA="$ROOT/artifacts/HGhub-iOS-LiquidGlass-v$VERSION.ipa"
-(cd "$STAGE" && /usr/bin/zip -qry "$IPA" Payload)
+IPA="$ROOT/artifacts/${HGHUB_IOS_IPA_NAME:-HGhub_${VERSION}_ios.ipa}"
+/usr/bin/ditto -c -k --keepParent "$STAGE/Payload" "$IPA"
 python3 scripts/verify-ipa.py "$IPA" --bundle-id "$IDENTIFIER" --version "$VERSION" \
-  --manifest artifacts/ios-build-manifest.json
+  --manifest artifacts/ios-build-manifest.json --bundled-dir bundled-plugins
 (cd artifacts && shasum -a 256 "$(basename "$IPA")" > SHA256SUMS.txt)

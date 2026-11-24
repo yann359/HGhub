@@ -7,6 +7,8 @@ import { usePluginRequests } from "./usePluginRequests";
 import PluginMediaDetail from "./PluginMediaDetail";
 import { Notice, type OpenMedia } from "./BrowsePages";
 import { useStore } from "../store";
+import { useAssetUrls } from './MediaCards';
+import { readMetadata } from './metadataCache';
 
 type QueueItem = { plugin: InstalledPlugin; item: MediaItem };
 type SourcePage = { method: string; args: Record<string, unknown>; cursor?: string; done: boolean; seen: Set<string> };
@@ -18,7 +20,7 @@ const shuffle = <T,>(items: T[]) => {
 
 export const playbackSources = (sources: InstalledPlugin[]) => sources.filter(p => p.methods.includes("media.resolvePlayback") && ["feed.list", "home.getSections", "catalog.list"].some(m => p.methods.includes(m)));
 
-export default function ImmersiveHome({ open, manage, settings }: { open: OpenMedia; manage: () => void; settings: () => void }) {
+export default function ImmersiveHome({ open, manage, settings, active = true }: { open: OpenMedia; manage: () => void; settings: () => void; active?: boolean }) {
   const host = useHost(), request = usePluginRequests(), app = useStore();
   const available = playbackSources(host.sources);
   const chosen = host.prefs.homeMode === "all" ? available : host.prefs.homeIds.flatMap(id => available.find(p => p.meta.id === id) || []).slice(0, host.prefs.homeMode === "single" ? 1 : undefined);
@@ -81,12 +83,24 @@ export default function ImmersiveHome({ open, manage, settings }: { open: OpenMe
     setQueue([]); setIndex(0); setErrors({}); setMore(false); void load();
     return () => { generation.current++; request.cancelAll(); };
   }, [signature, round]);
-  const next = () => { if (index + 1 < queue.length) setIndex(i => i + 1); else if (more && !busy) void load(true); };
-  const previous = () => setIndex(i => Math.max(0, i - 1));
+  const next = () => { if (!active) return; if (index + 1 < queue.length) setIndex(index + 1); else if (more && !busy) void load(true); };
+  const previous = () => { if (active) setIndex(Math.max(0, index - 1)); };
   const current = queue[index];
+  const before = queue[index - 1], after = queue[index + 1];
+  const beforePoster = useAssetUrls(before?.plugin.meta.id || '', before?.item.cover ? [before.item.cover] : [])[0];
+  const afterPoster = useAssetUrls(after?.plugin.meta.id || '', after?.item.cover ? [after.item.cover] : [])[0];
+  useEffect(() => {
+    if (active && more && queue.length - index < 4 && !loading.current) void load();
+  }, [active, index, queue.length, more]);
+  useEffect(() => {
+    if (!active || !after || after.item.entryEpisodeId) return;
+    const timer = window.setTimeout(() => { void readMetadata(after.plugin, 'media.getDetail', { id: after.item.id }, false, false).catch(() => {}); }, 600);
+    return () => clearTimeout(timer);
+  }, [active, after?.plugin.meta.id, after?.plugin.revision, after?.item.id]);
+  const loadingHome = !host.ready || busy;
   return <div className="legacy-home">
-    {current ? <PluginMediaDetail key={JSON.stringify([current.plugin.meta.id,current.item.id])} plugin={current.plugin} mediaId={current.item.id} entryEpisodeId={current.item.entryEpisodeId} entryItem={current.item} manage={manage} onSwitch={(pluginId,mediaId,start)=>app.push({kind:"media",pluginId,mediaId,start})} presentation={{title:current.item.title,queueIndex:index,total:queue.length,onNext:index+1<queue.length||more?next:undefined,onPrevious:index?previous:undefined}}/>
-      : <div className="absolute inset-0 bg-black flex flex-col items-center justify-center gap-4 text-white/60 text-xs"><Logo size={42}/><p>{busy?"正在加载…":available.length?"暂无可播放内容":"添加片源后开始观看"}</p>{!busy&&<button className="rounded-full px-5 py-2 bg-white/10" onClick={available.length?settings:manage}>{available.length?"选择片源":"添加片源"}</button>}</div>}
+    {current ? <PluginMediaDetail key={JSON.stringify([current.plugin.meta.id,current.plugin.revision,current.item.id])} active={active} plugin={current.plugin} mediaId={current.item.id} entryEpisodeId={current.item.entryEpisodeId} entryItem={current.item} manage={manage} onSwitch={(pluginId,mediaId,start)=>app.push({kind:"media",pluginId,mediaId,start})} presentation={{mode:"preview",title:current.item.title,queueIndex:index,total:queue.length,onNext:index+1<queue.length||more?next:undefined,onPrevious:index?previous:undefined,nextPreview:after?{title:after.item.title,poster:afterPoster}:undefined,previousPreview:before?{title:before.item.title,poster:beforePoster}:undefined}}/>
+      : <div className="absolute inset-0 bg-black flex flex-col items-center justify-center gap-4 text-white/60 text-xs"><Logo size={42}/><p>{loadingHome?"正在加载片源…":host.error|| (available.length?"暂无可播放内容":"添加片源后开始观看")}</p>{!loadingHome&&<button className="rounded-full px-5 py-2 bg-white/10" onClick={available.length?settings:manage}>{available.length?"选择片源":"添加片源"}</button>}</div>}
     {!!Object.keys(errors).length&&<details className="hpp-home-errors"><summary>{Object.keys(errors).length} 个片源暂不可用</summary>{Object.values(errors).map(e=><Notice key={e} error={e}/>)}<button onClick={()=>void load()}>重试片源</button></details>}
   </div>;
 }

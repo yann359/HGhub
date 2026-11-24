@@ -94,6 +94,158 @@ fn keys(preview: &hghub_hpp::manager::ImportPreview) -> Vec<String> {
 }
 
 #[tokio::test]
+async fn granted_directory_resolves_opaque_ids_and_only_reads_selected_plugins() {
+    struct TreeDocuments {
+        files: Documents,
+        reads: Mutex<Vec<String>>,
+        references: Mutex<Vec<String>>,
+    }
+    impl hghub_hpp::manager::DocumentReader for TreeDocuments {
+        fn read(&self, location: &str, limit: usize) -> hghub_hpp::Result<Vec<u8>> {
+            self.reads.lock().unwrap().push(location.into());
+            self.files.read(location, limit)
+        }
+        fn resolve_relative(&self, base: &str, reference: &str) -> hghub_hpp::Result<String> {
+            assert_eq!(base, "content://provider/tree/root/document/opaque-list");
+            self.references.lock().unwrap().push(reference.into());
+            match reference {
+                "sources/one.js" => Ok("content://provider/tree/root/document/opaque-one".into()),
+                "wrong.js" => Ok("content://provider/tree/root/document/opaque-wrong".into()),
+                "unused.js" => Ok("content://provider/tree/root/document/opaque-unused".into()),
+                "../outside.js" => Err(hghub_hpp::PluginError::invalid("列表条目越出了获授权目录")),
+                _ => panic!("unexpected reference {reference}"),
+            }
+        }
+    }
+    let list = "content://provider/tree/root/document/opaque-list";
+    let one = "content://provider/tree/root/document/opaque-one";
+    let wrong = "content://provider/tree/root/document/opaque-wrong";
+    let reader = Arc::new(TreeDocuments {
+        files: Documents(HashMap::from([
+            (list.into(), json!({"plugins":[
+                {"id":"fixture.source","name":"One","version":"1.0.0","url":"sources/one.js"},
+                {"id":"fixture.source","name":"Wrong","version":"1.0.0","url":"wrong.js"},
+                {"id":"fixture.unused","name":"Unused","version":"1.0.0","url":"unused.js"},
+                {"id":"fixture.outside","name":"Outside","version":"1.0.0","url":"../outside.js"},
+                {"id":"fixture.remote","name":"Remote","version":"1.0.0","url":"https://plugins.example/demo.js"}
+            ]}).to_string().into_bytes()),
+            (one.into(), SOURCE.as_bytes().to_vec()),
+            (wrong.into(), SOURCE.replace("fixture.source", "fixture.wrong").into_bytes()),
+        ])),
+        reads: Mutex::default(),
+        references: Mutex::default(),
+    });
+    let dir = tempfile::tempdir().unwrap();
+    let manager = PluginManager::open(dir.path().into())
+        .unwrap()
+        .with_document_reader(reader.clone());
+    let preview = manager
+        .preview_import(vec![list.into()], "directory")
+        .await
+        .unwrap();
+    assert_eq!(*reader.reads.lock().unwrap(), vec![list]);
+    assert_eq!(reader.references.lock().unwrap().len(), 4);
+    assert_eq!(preview.items[0].source, one);
+    assert_eq!(
+        preview.items[3].error.as_ref().unwrap().code,
+        "INVALID_ARGUMENT"
+    );
+    assert_eq!(preview.items[4].source, "https://plugins.example/demo.js");
+    assert!(preview.items[4].error.is_none());
+    let report = manager
+        .apply_import(
+            &preview.token,
+            preview.items[..2]
+                .iter()
+                .map(|item| item.key.clone())
+                .collect(),
+            false,
+            true,
+            "directory-install",
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        report.items[0].plugin.as_ref().unwrap().source.as_deref(),
+        Some(list)
+    );
+    assert_eq!(
+        report.items[0]
+            .plugin
+            .as_ref()
+            .unwrap()
+            .origin
+            .as_ref()
+            .unwrap()
+            .location,
+        one
+    );
+    assert!(report.items[1]
+        .error
+        .as_ref()
+        .unwrap()
+        .message
+        .contains("id 或 version"));
+    assert_eq!(*reader.reads.lock().unwrap(), vec![list, one, wrong]);
+    assert_eq!(manager.list().await.len(), 1);
+}
+
+#[tokio::test]
+async fn cancelling_directory_preview_stops_before_resolving_next_entry() {
+    use std::sync::{
+        atomic::{AtomicUsize, Ordering},
+        mpsc,
+    };
+    struct BlockingDocuments {
+        started: tokio::sync::Notify,
+        release: Mutex<mpsc::Receiver<()>>,
+        calls: AtomicUsize,
+    }
+    impl hghub_hpp::manager::DocumentReader for BlockingDocuments {
+        fn read(&self, _: &str, _: usize) -> hghub_hpp::Result<Vec<u8>> {
+            Ok(json!({"plugins":[
+                {"id":"fixture.one","name":"One","version":"1.0.0","url":"one.js"},
+                {"id":"fixture.two","name":"Two","version":"1.0.0","url":"two.js"}
+            ]})
+            .to_string()
+            .into_bytes())
+        }
+        fn resolve_relative(&self, _: &str, _: &str) -> hghub_hpp::Result<String> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            self.started.notify_one();
+            self.release.lock().unwrap().recv().unwrap();
+            Ok("content://provider/one".into())
+        }
+    }
+    let (release, receiver) = mpsc::channel();
+    let reader = Arc::new(BlockingDocuments {
+        started: Default::default(),
+        release: Mutex::new(receiver),
+        calls: AtomicUsize::new(0),
+    });
+    let dir = tempfile::tempdir().unwrap();
+    let manager = Arc::new(
+        PluginManager::open(dir.path().into())
+            .unwrap()
+            .with_document_reader(reader.clone()),
+    );
+    let pending = {
+        let manager = manager.clone();
+        tokio::spawn(async move {
+            manager
+                .preview_import(vec!["content://provider/list".into()], "cancel-directory")
+                .await
+        })
+    };
+    reader.started.notified().await;
+    manager.cancel("cancel-directory").await;
+    let outcome = tokio::time::timeout(Duration::from_secs(2), pending).await;
+    release.send(()).unwrap();
+    assert_eq!(outcome.unwrap().unwrap().err().unwrap().code, "CANCELLED");
+    assert_eq!(reader.calls.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
 async fn local_manifest_selection_identity_failures_install_only_and_recovery() {
     let dir = tempfile::tempdir().unwrap();
     let files = tempfile::tempdir().unwrap();

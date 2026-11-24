@@ -201,6 +201,30 @@ fn main() {
         bindgen_cflags.push(format!("--target={}", if simulator {
             if target.starts_with("x86_64") { "x86_64-apple-ios16.4-simulator" } else { "arm64-apple-ios16.4-simulator" }
         } else { "arm64-apple-ios16.4" }));
+    } else if target_os == "android" {
+        // Match the C compilation target, including the mobile deployment
+        // version and Apple SDK path. Rust's unversioned Android triple is
+        // rejected by recent NDK headers when used directly by bindgen.
+        let compiler = builder.get_compiler();
+        bindgen_cflags.extend(
+            compiler
+                .args()
+                .iter()
+                .map(|arg| arg.to_string_lossy().into_owned()),
+        );
+        if target_os == "android" {
+            // On Unix, NDK wrappers encode the target/API in their filename;
+            // on Windows cc already provides the equivalent --target argument.
+            if let Some(target) = compiler
+                .path()
+                .file_stem()
+                .and_then(|name| name.to_str())
+                .and_then(|name| name.strip_suffix("-clang"))
+                .filter(|target| target.contains("android"))
+            {
+                bindgen_cflags.push(format!("--target={target}"));
+            }
+        }
     }
 
     if target_os == "android" {

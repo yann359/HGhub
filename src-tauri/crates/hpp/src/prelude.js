@@ -147,16 +147,17 @@
       return current || "";
     },
     async install(factory, config){
-      const {meta,settings,endpoint}=JSON.parse(config), log={};
+      const {meta,settings,endpoint,media,webLogin}=JSON.parse(config), log={};
       for(const level of ["debug","info","warn","error"])log[level]=(...args)=>sync("log",{level,text:args.map(v=>v instanceof Uint8Array?`Uint8Array(${v.length})`:typeof v==="string"?v:(()=>{try{return JSON.stringify(v);}catch{return String(v);}})()).join(" ")});
       const codec={
         base64Encode:(data,options={})=>sync("codec.base64Encode",{data,...options}),base64Decode:text=>sync("codec.base64Decode",{text}),
         hexEncode:data=>sync("codec.hexEncode",{data}),hexDecode:text=>sync("codec.hexDecode",{text}),
         utf8Encode:text=>sync("codec.utf8Encode",{text}),utf8Decode:data=>sync("codec.decodeText",{data,charset:"utf-8"}),decodeText:(data,charset)=>sync("codec.decodeText",{data,charset})
       };
-      const crypto={digest:(algorithm,data)=>sync("crypto.digest",{algorithm,data}),hmac:(algorithm,key,data)=>sync("crypto.hmac",{algorithm,key,data}),aesEncrypt:(params,data)=>sync("crypto.aesEncrypt",{...params,data}),aesDecrypt:(params,data)=>sync("crypto.aesDecrypt",{...params,data}),randomBytes:length=>sync("crypto.randomBytes",{length}),randomUUID:()=>sync("crypto.randomUUID",{})};
-      const hg={PluginError,env:deepFreeze(configEnv(meta)),endpoint:Object.freeze({current:deepFreeze(endpoint),url(path){if(!endpoint)throw new PluginError("UNSUPPORTED","当前尚无站点线路");const u=new URL(path,endpoint.url);if(!path.startsWith("/")||path.startsWith("//")||u.origin!==endpoint.url)throw new PluginError("INVALID_ARGUMENT","路径必须位于当前 origin");return u.href;}}),settings:Object.freeze({get:key=>Object.hasOwn(settings,key)?structuredClone(settings[key]):undefined,getAll:()=>structuredClone(settings)}),log,codec,crypto,
+      const crypto={digest:(algorithm,data)=>sync("crypto.digest",{algorithm,data}),hmac:(algorithm,key,data)=>sync("crypto.hmac",{algorithm,key,data}),aesEncrypt:(params,data)=>sync("crypto.aesEncrypt",{...params,data}),aesDecrypt:(params,data)=>sync("crypto.aesDecrypt",{...params,data}),rsaEncrypt:(params,data)=>sync("crypto.rsaEncrypt",{...params,data}),randomBytes:length=>sync("crypto.randomBytes",{length}),randomUUID:()=>sync("crypto.randomUUID",{})};
+      const hg={PluginError,env:deepFreeze(configEnv(meta,media,webLogin)),endpoint:Object.freeze({current:deepFreeze(endpoint),url(path){if(!endpoint)throw new PluginError("UNSUPPORTED","当前尚无站点线路");const u=new URL(path,endpoint.url);if(!path.startsWith("/")||path.startsWith("//")||u.origin!==endpoint.url)throw new PluginError("INVALID_ARGUMENT","路径必须位于当前 origin");return u.href;}}),settings:Object.freeze({get:key=>Object.hasOwn(settings,key)?structuredClone(settings[key]):undefined,getAll:()=>structuredClone(settings)}),log,codec,crypto,
         http:{fetch(req){const{signal,...params}=req;return host("http",params,signal);}},
+        ...(webLogin ? {webview:Object.freeze({open:params=>host("webview.open",params)})} : {}),
         cookies:Object.fromEntries(["get","set","clear"].map(op=>[op,params=>host("cookies."+op,params||{})])),
         storage:{async get(key){const r=await host("storage.get",{key});return r.found?r.value:undefined;},set:(key,value,options={})=>host("storage.set",{key,value,...options}),delete:key=>host("storage.delete",{key}),keys:(prefix="")=>host("storage.keys",{prefix}),clear:()=>host("storage.clear",{})},
         html:{parse(html){scope();return node(sync("html.parse",{html}));}}
@@ -178,8 +179,8 @@
       return JSON.stringify(available);
     },
     start(id,method,params,deadline){
-      const before=current;current=id;const controller=new AbortController();scopes.set(id,{signal:controller.signal,controller});
-      const ctx=Object.freeze({requestId:id,deadline,signal:controller.signal});
+      const before=current;current=id;const controller=new AbortController();const state={signal:controller.signal,controller,deadline};scopes.set(id,state);
+      const ctx=Object.freeze({requestId:id,get deadline(){return state.deadline;},signal:controller.signal});
       Promise.resolve().then(()=>{
         const parts=method.split("."),target=parts.length===1?plugin:plugin[parts[0]],fn=target?.[parts.at(-1)];
         if(typeof fn!=="function")throw new PluginError("UNSUPPORTED","未实现该能力");
@@ -191,15 +192,20 @@
       },e=>{try{finishNative(id,JSON.stringify({ok:false,error:errorValue(e)}));}catch{finishNative(id,JSON.stringify({ok:false,error:{code:'INTERNAL',message:'插件执行失败'}}));}finally{clean(id);}});
       current=before;
     },
+    setDeadline(id, value) {
+      const state = scopes.get(id);
+      if (state) state.deadline = value;
+    },
     deliver(id,response){const p=pending.get(id);if(!p)return;pending.delete(id);p.cleanup();if(!scopes.has(p.owner))return;const before=current;current=p.owner;try{p.resolve(unwrap(response));}catch(e){p.reject(e);}finally{current=before;}},
     cancel(id){const s=scopes.get(id);if(s){s.controller.abort();clean(id);}},
+    dispose(){for(const id of [...scopes.keys()])clean(id);current=null;if(typeof plugin?.dispose==="function")plugin.dispose();},
     pack,unpack
   };
-  function configEnv(meta){return {protocol:"1.0.0-dev",app:{name:"HGhub",version:"0.0.1"},plugin:{id:meta.id,version:meta.version},platform:sync("env",{}).platform,locale:"zh-CN",features:["charset.legacy"],media:{codecs:["h264"],formats:["hls","progressive"]}};}
+  function configEnv(meta,media,webLogin){return {protocol:"1.0.0-dev",app:{name:"HGhub",version:"0.0.1"},plugin:{id:meta.id,version:meta.version},platform:sync("env",{}).platform,locale:"zh-CN",features:webLogin?["charset.legacy","webview"]:["charset.legacy"],media};}
   function structuredClone(v){return unpack(pack(v));}
   Object.assign(globalThis,{AbortSignal,AbortController,TextEncoder,TextDecoder,URL,URLSearchParams,setTimeout,clearTimeout,structuredClone,
     queueMicrotask:fn=>Promise.resolve().then(fn),
-    atob:s=>String.fromCharCode(...sync("codec.base64Decode",{text:String(s)})),
+    atob:s=>{const bytes=sync("codec.base64Decode",{text:String(s)});let out="";for(let i=0;i<bytes.length;i+=8192)out+=String.fromCharCode.apply(null,bytes.subarray(i,i+8192));return out;},
     btoa:s=>{s=String(s);if([...s].some(c=>c.charCodeAt(0)>255))throw new TypeError("Invalid character");return sync("codec.base64Encode",{data:new Uint8Array([...s].map(c=>c.charCodeAt(0)))});},
     crypto:{getRandomValues(array){if(!ArrayBuffer.isView(array)||array instanceof DataView||array instanceof Float32Array||array instanceof Float64Array||array.byteLength>65536)throw new TypeError("Expected integer typed array, at most 65536 bytes");new Uint8Array(array.buffer,array.byteOffset,array.byteLength).set(sync("crypto.randomBytes",{length:array.byteLength}));return array;},randomUUID:()=>sync("crypto.randomUUID",{})},
     console:Object.fromEntries(["debug","log","info","warn","error"].map(level=>[level,(...args)=>sync("log",{level:level==='log'?'info':level,text:logText(args)})]))});

@@ -1,9 +1,11 @@
 import { useEffect, useRef, useState } from "react";
 import { fmtTime } from "../format";
 import { useSeekInput } from "../useSeekInput";
-import { ICheck, ICompress, IExpand, ILockF, INext, IPauseF, IPip, IPlayF, ITheater, IVol, IVolMute } from "../icons";
+import { IPip, IHeart, IHeartF, IList, IMore, ICheck, ICompress, IExpand, ILockF, INext, IPauseF, IPlayF, IVol, IVolMute } from "../icons";
 
 type Props = {
+  favorite?: boolean; onFavorite?: () => void;
+  mobile?: boolean; onEpisodes?: () => void; onMore?: () => void;
   paused: boolean;
   time: number;
   duration: number;
@@ -28,14 +30,14 @@ type Props = {
   onLock: () => void;
   onTheater?: () => void;
   onFullscreen: () => void;
-  onNext?: () => void;
+  onNext?: () => void; onPrevious?: () => void;
 };
 
 const clock = (s: number) => fmtTime(Math.max(0, s || 0)).padStart(5, "0");
 
 export default function PlayerControls({
-  paused, time, duration, buffered = 0, rate, muted, volume, theater = false, fullscreen = false,
-  visible = true, seekEnabled = true, seekKey, nextDisabled = false, nextTitle = "下一个", onToggle, onSeek, onSeekInteraction, onRate, onMute, onVolume, onPip, onLock, onTheater, onFullscreen, onNext,
+  favorite=false, onFavorite, mobile=false, onEpisodes, onMore, paused, time, duration, buffered = 0, rate, muted, volume, theater = false, fullscreen = false,
+  visible = true, seekEnabled = true, seekKey, nextDisabled = false, nextTitle = "下一个", onToggle, onSeek, onSeekInteraction, onRate, onMute, onVolume, onPip, onLock, onTheater, onFullscreen, onNext, onPrevious,
 }: Props) {
   const [speedOpen, setSpeedOpen] = useState(false);
   const boxRef = useRef<HTMLDivElement>(null);
@@ -51,8 +53,9 @@ export default function PlayerControls({
   }, [speedOpen]);
 
   return (
-    <div ref={boxRef} className={`desktop-controls ${fullscreen ? "is-fullscreen" : ""} ${visible ? "" : "is-hidden"}`}
+    <div ref={boxRef} className={`desktop-controls ${mobile?"hg-mobile-controls":""} ${fullscreen ? "is-fullscreen" : ""} ${visible ? "" : "is-hidden"}`}
       onPointerDown={(e) => e.stopPropagation()}>
+      {!mobile&&<div className="hg-player-times"><span>{clock(seek.time)}</span><span>{clock(duration)}</span></div>}
       <div className={`desktop-seek ${seekEnabled ? "is-seekable" : ""}`}>
         <div className="desktop-seek-track">
           <span className="desktop-seek-buffer" style={{ width: `${Math.min(1, buffered) * 100}%` }} />
@@ -61,7 +64,8 @@ export default function PlayerControls({
         <input aria-label="播放进度" type="range" {...seek.inputProps} />
       </div>
 
-      <div className="desktop-control-row">
+      {mobile ? <div className="hg-mobile-control-row"><button aria-label="锁定播放控制" onClick={onLock}><ILockF size={22}/></button><button aria-label="全屏" onClick={onFullscreen}><IExpand size={24}/></button></div> : <div className="desktop-control-row">
+        {(onEpisodes || onPrevious) && <button className="player-control" aria-label="上一集" data-tooltip="上一集 PageUp" disabled={!onPrevious} onClick={onPrevious}><INext size={18} className="rotate-180"/></button>}
         <button className="player-control primary-play" aria-label={paused ? "播放" : "暂停"} data-tooltip={paused ? "播放 Space" : "暂停 Space"} onClick={onToggle}>
           {paused ? <IPlayF size={19} /> : <IPauseF size={18} />}
         </button>
@@ -70,7 +74,7 @@ export default function PlayerControls({
             <INext size={18} strokeWidth={1.7} />
           </button>
         )}
-        <span className="player-timecode"><span>{clock(seek.time)}</span><span className="player-time-separator">/</span>{clock(duration)}</span>
+
         <div className="player-control-spacer" />
         <div className="player-speed-slot">
           <button className={`player-control player-speed ${rate !== 1 ? "is-on" : ""}`} aria-label="倍速" aria-expanded={speedOpen}
@@ -98,16 +102,15 @@ export default function PlayerControls({
               onChange={(e) => onVolume(Number(e.target.value))} />
           </div>
         </div>
-        <button className="player-control" aria-label="画中画" data-tooltip="画中画" onClick={onPip}><IPip size={20} strokeWidth={1.6} /></button>
-        <button className="player-control" aria-label="锁定播放控制" aria-pressed={false} data-tooltip="锁定播放控制" onClick={onLock}><ILockF size={18} /></button>
-        {!fullscreen && onTheater && (
-          <button className={`player-control ${theater ? "is-on" : ""}`} aria-label="影院模式" aria-pressed={theater}
-            data-tooltip="影院模式 T" onClick={onTheater}><ITheater size={20} strokeWidth={1.6} /></button>
-        )}
+        <button className="player-control" aria-label="画中画" data-tooltip="画中画" onClick={onPip}><IPip size={20}/></button>
+        <button className="player-control" aria-label="锁定播放控制" data-tooltip="锁定播放控制" onClick={onLock}><ILockF size={18}/></button>
+        {onFavorite&&<button className={`player-control ${favorite?"is-on":""}`} aria-label={favorite?"取消本地收藏":"本地收藏"} aria-pressed={favorite} data-tooltip={favorite?"取消收藏":"收藏"} onClick={onFavorite}>{favorite?<IHeartF size={20}/>:<IHeart size={20}/>}</button>}
+        {onEpisodes&&<button className="player-control" aria-label="选集" data-tooltip="选集 E" onClick={onEpisodes}><IList size={21}/></button>}
         <button className="player-control" aria-label={fullscreen ? "退出全屏" : "全屏"} data-tooltip={fullscreen ? "退出全屏 Esc" : "全屏 F"} onClick={onFullscreen}>
           {fullscreen ? <ICompress size={19} strokeWidth={1.6} /> : <IExpand size={19} strokeWidth={1.6} />}
         </button>
-      </div>
+        <button className="player-control" aria-label="更多" data-tooltip="更多" onClick={onMore}><IMore size={22}/></button>
+      </div>}
     </div>
   );
 }

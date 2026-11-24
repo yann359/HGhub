@@ -19,6 +19,8 @@ import { pendingUpdates } from "./plugins/updateClient";
 import "./plugins/plugins.css";
 import "./plugins/shell.css";
 import "./plugins/legacy-adapter.css";
+import "./plugins/watch-experience.css";
+import "./plugins/refined-pages.css";
 import ImmersiveHome from "./plugins/ImmersiveHome";
 import { runBack } from "./back";
 import { addPluginListener, invoke } from "@tauri-apps/api/core";
@@ -26,29 +28,32 @@ export default function App() { return <HostProvider><Application/></HostProvide
 function Application() {
   const app=useStore(),host=useHost(),[collapsed,setCollapsed]=useState(false),top=app.stack[app.stack.length-1];
   const backRef=useRef(()=>{});
-  backRef.current=()=>{if(app.fs){app.setFs(false);return;}if(document.fullscreenElement){void document.exitFullscreen();return;}if(runBack())return;if(app.stack.length)app.pop();else if(app.tab!=="home")app.setTab("home");else void invoke("plugin:app|exit",{code:0}).catch(()=>{});};
+  backRef.current=()=>{if(runBack(10))return;if(app.fs){app.setFs(false);return;}if(document.fullscreenElement){void document.exitFullscreen();return;}if(runBack())return;if(app.stack.length)app.pop();else if(app.tab!=="home")app.setTab("home");else void invoke("plugin:app|exit",{code:0}).catch(()=>{});};
   useEffect(()=>{if(app.platform!=="android")return;let disposed=false;let listener:{unregister:()=>Promise<void>}|undefined;void addPluginListener("app","back-button",()=>backRef.current()).then(l=>{if(disposed)void l.unregister();else listener=l;}).catch(()=>{});return()=>{disposed=true;void listener?.unregister();};},[app.platform]);
   const manage=(focusId?:string)=>{host.clearAuth();app.push({kind:"plugins",focusId});};
   const open=(pluginId:string,mediaId:string)=>app.push({kind:"media",pluginId,mediaId});
-  const reserveBottom=isMobile&&!top&&!app.fs&&(app.platform==="ios"?app.tab!=="home":!app.clean);
+  const mobileBottom=app.platform==="ios"?"calc(82px + var(--sab, 0px))":"calc(40px + var(--sab, 0px))";
   useEffect(()=>{const fn=(e:KeyboardEvent)=>{
     const target=e.target as HTMLElement;
     if(e.defaultPrevented||document.querySelector("dialog[open]")||target.closest("input,textarea,select,[contenteditable=true],[role=dialog]"))return;
-    if(e.key==="Escape"){if(runBack()){e.preventDefault();return;}if(app.fs)app.setFs(false);else if(document.fullscreenElement)void document.exitFullscreen();else app.pop();}
+    if(e.key==="Escape"){if(runBack(10)){e.preventDefault();return;}if(app.fs){e.preventDefault();app.setFs(false);return;}if(document.fullscreenElement){e.preventDefault();void document.exitFullscreen();return;}if(runBack()){e.preventDefault();return;}app.pop();}
     else if(e.key==="/"){e.preventDefault();app.setTab("search");}
     else if(!e.repeat&&["1","2","3","4"].includes(e.key))app.setTab((["home","search","category","profile"] as Tab[])[Number(e.key)-1]);
-  };window.addEventListener("keydown",fn);return()=>window.removeEventListener("keydown",fn);},[app.pop,app.setTab]);
+  };window.addEventListener("keydown",fn);return()=>window.removeEventListener("keydown",fn);},[app.pop,app.setTab,app.fs]);
   return <div className={`absolute inset-0 flex flex-col bg-canvas win-root plat-${app.platform}`} style={isMobile?{"--sat":"max(env(safe-area-inset-top), 12px)","--sab":"max(env(safe-area-inset-bottom), 16px)"} as React.CSSProperties:undefined}>
-    {!isMobile&&<DesktopTitleBar collapsed={collapsed} onToggle={()=>setCollapsed(v=>!v)}/>}
-    <div className="relative flex-1 min-h-0 flex">{!isMobile&&!app.theater&&<DesktopRail collapsed={collapsed}/>}<main className={`relative flex-1 min-w-0 overflow-hidden win-main ${app.theater?"is-theater-main":""}`}>
-      <div className="absolute inset-0" style={{bottom:reserveBottom?(app.platform==="ios"?"calc(82px + var(--sab, 0px))":"calc(40px + var(--sab, 0px))"):0}}>{!top&&(app.tab==="home"?<ImmersiveHome open={open} manage={manage} settings={()=>app.push({kind:"settings"})}/>:app.tab==="category"?<PluginCategory open={open} manage={manage} openContent={(kind,pluginId)=>app.push({kind,pluginId})}/>:app.tab==="search"?<PluginSearch open={open} manage={manage}/>:<LibraryPage open={open} manage={manage} settings={()=>app.push({kind:"settings"})}/>)}</div>
-      {app.stack.map((page,i)=><div key={page.key} className={`absolute inset-0 bg-bg ${i===app.stack.length-1?"z-30":"invisible pointer-events-none"}`}>
+    {!isMobile&&!app.watching&&<DesktopTitleBar collapsed={collapsed} onToggle={()=>setCollapsed(v=>!v)}/>}
+    <div className="relative flex-1 min-h-0 flex">{!isMobile&&!app.theater&&!app.watching&&<DesktopRail collapsed={collapsed}/>}<main className={`relative flex-1 min-w-0 overflow-hidden win-main ${app.watching?"is-watching-main":app.theater?"is-theater-main":""}`}>
+      <div className="absolute inset-0" inert={app.tab!=="home"||!!top} hidden={app.tab!=="home"||!!top} style={{bottom:isMobile&&app.platform!=="ios"&&!top&&!app.fs&&!app.clean&&!app.watching?mobileBottom:0}}>
+        <ImmersiveHome active={app.tab==="home"&&!top} open={open} manage={manage} settings={()=>app.push({kind:"settings"})}/>
+      </div>
+      <div className="absolute inset-0" inert={!!top} hidden={app.tab==="home"} style={{bottom:isMobile&&!top?mobileBottom:0}}>{app.tab!=="home"&&(!top||top.kind==="media")&&(app.tab==="category"?<PluginCategory open={open} manage={manage} openContent={(kind,pluginId)=>app.push({kind,pluginId})}/>:app.tab==="search"?<PluginSearch open={open} manage={manage}/>:<LibraryPage open={open} manage={manage} settings={()=>app.push({kind:"settings"})}/>)}</div>
+      {app.stack.map((page,i)=><div key={page.key} className={`absolute inset-0 ${page.kind==="media"?"":"bg-bg"} ${i===app.stack.length-1?"z-30":i===app.stack.length-2&&top?.kind==="media"&&!app.watching?"pointer-events-none":"invisible pointer-events-none"}`}>
         {page.kind==="plugins"?<Plugins onBack={app.pop} focusId={page.focusId}/>:page.kind==="settings"?<ApplicationSettings onBack={app.pop}/>:page.kind==="section"?<SectionRoute {...page} open={open} onBack={app.pop}/>:page.kind==="media"?<MediaPage pluginId={page.pluginId} mediaId={page.mediaId} start={page.start} onBack={app.pop} manage={manage} active={i===app.stack.length-1} onSwitch={(pluginId,mediaId,start)=>app.replace({kind:"media",pluginId,mediaId,start})}/>:<ContentRoute page={page} active={i===app.stack.length-1}/>}
       </div>)}
       {host.authPrompt&&<div className="hpp-global-auth" role="status"><span>{host.authPrompt.message}</span><button onClick={()=>manage(host.authPrompt?.id)}>前往插件登录</button><button onClick={host.clearAuth}>关闭</button></div>}
       {pendingUpdates(host.updates).length>0&&!top&&<div className="hpp-global-updates" role="status"><span>{pendingUpdates(host.updates).length} 个插件有更新{host.updates.policy.autoInstall?"，将在播放结束后安装":""}</span><button onClick={()=>manage()}>查看插件更新</button></div>}
     </main></div>
-    {isMobile&&!top&&!app.fs&&!app.clean&&<TabBar/>}
+    {isMobile&&!top&&!app.fs&&!app.clean&&!app.watching&&<TabBar/>}
     {app.platform==="windows"&&<ResizeHandles/>}
   </div>;
 }

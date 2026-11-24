@@ -1,0 +1,9 @@
+{
+  "name": "HGhub iOS 开放片源",
+  "description": "离线可导入的开放片源与解析器。播放需要连接对应版权方和公开媒体托管服务。",
+  "plugins": [
+    {"id":"dev.hghub.blender-open-movies","name":"Blender 开放电影","version":"1.0.0","url":"blender-open-movies.js"},
+    {"id":"dev.hghub.nasa-svs","name":"NASA SVS 科普影像","version":"1.0.0","url":"nasa-svs.js"},
+    {"id":"dev.hghub.nasa-svs-resolver","name":"NASA SVS 播放解析器","version":"1.0.0","url":"nasa-svs-resolver.js"}
+  ]
+}
