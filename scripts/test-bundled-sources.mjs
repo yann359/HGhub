@@ -15,6 +15,7 @@ const data = await mkdtemp(join(tmpdir(), "hghub-bundled-"));
 const executable = resolve("src-tauri/crates/hpp/target/debug/examples", process.platform === "win32" ? "dev_host.exe" : "dev_host");
 const manifestPath = resolve("bundled-plugins/manifest.json");
 const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
+const manifestUrl = "https://raw.githubusercontent.com/yann359/HGhub/codex/ios-liquid-glass-plugin/bundled-plugins/manifest.json";
 const blender = "dev.hghub.blender-open-movies", nasa = "dev.hghub.nasa-svs", resolver = "dev.hghub.nasa-svs-resolver";
 const checked = [];
 let child, vite, browser;
@@ -68,6 +69,18 @@ try {
   assert.deepEqual(preview.items.map(item => [item.id, item.version, !!item.error]), manifest.plugins.map(p => [p.id, p.version, false]));
   await ok(dispatch, "distribution.discard", { token: preview.token });
   note("First launch compiled defaults, identity/version and local manifest");
+  const remote = await ok(dispatch, "distribution.preview", { locations: [manifestUrl] });
+  assert.equal(remote.items.length, 3);
+  assert.equal(remote.subscriptions[0].location, manifestUrl);
+  await ok(dispatch, "subscriptions.save", { token: remote.token, location: manifestUrl });
+  await ok(dispatch, "distribution.discard", { token: remote.token });
+  const subscriptionList = await ok(dispatch, "updates.state");
+  assert(subscriptionList.subscriptions.some(item => item.location === manifestUrl));
+  const checkedUpdates = await ok(dispatch, "updates.check", { ids: manifest.plugins.map(plugin => plugin.id) });
+  assert.equal(checkedUpdates.statuses.length, 3);
+  assert(checkedUpdates.statuses.every(plugin => plugin.status === "current"), JSON.stringify(checkedUpdates.statuses));
+  await ok(dispatch, "distribution.discard", { token: checkedUpdates.preview.token });
+  note("Published HTTPS manifest, saved subscription and real version checks");
 
   for (const id of [blender, nasa]) {
     assert((await call(dispatch, id, "home.getSections")).items[0].items.length > 0);
@@ -104,7 +117,7 @@ try {
   assert.match(await subtitle.text(), /^WEBVTT/);
   note("Real NASA API resolver, 720p selection, episode change, Blender MP4/HLS lines and SRT-to-VTT");
 
-  vite = await createServer({ server: { port: 0, strictPort: true, host: "127.0.0.1" } });
+  vite = await createServer({ server: { port: 0, strictPort: false, host: "127.0.0.1" } });
   await vite.listen();
   const url = "http://127.0.0.1:" + vite.httpServer.address().port;
   browser = await chromium.launch({ headless: true, executablePath: process.env.BROWSER_EXECUTABLE || (process.platform === "win32" ? "C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe" : undefined), args: ["--autoplay-policy=no-user-gesture-required"] });
@@ -115,40 +128,27 @@ try {
     const body = await dispatch(action, params);
     await route.fulfill({ json: body });
   });
-  await page.goto(url + "/tests/plugins.html");
-  const navigation = page.getByRole("navigation", { name: "主导航" });
-  await page.locator(".hg-preview-copy h1").waitFor({ timeout: 30000 });
-  await navigation.getByRole("button", { name: "搜索", exact: true }).click();
-  const search = page.getByRole("textbox", { name: "搜索所有插件" });
-  await search.fill("大雄兔");
-  await search.press("Enter");
-  await page.locator(".legacy-search-poster").first().click({ timeout: 15000 });
-  await page.getByRole("dialog").waitFor({ timeout: 15000 });
-  assert.match(await page.getByRole("dialog").innerText(), /Big Buck Bunny/);
-  note("React iPhone-size home, search and real detail (Edge, bridged Tauri IPC)");
-
-  for (const [format, media] of [["MP4", mp4], ["HLS", hls]]) {
+  for (const { format, title, query } of [
+    { format: "HLS", title: /Big Buck Bunny/, query: "大雄兔" },
+    { format: "MP4", title: /月相与天平动/, query: "月相" },
+  ]) {
     await page.goto(url + "/tests/plugins.html");
-    await page.evaluate(async ({ media, format, origin }) => {
-      const video = document.createElement("video");
-      video.muted = true;
-      video.playsInline = true;
-      video.crossOrigin = "anonymous";
-      if (format === "HLS") {
-        const modulePath = origin + "/node_modules/.vite/deps/hls__js.js";
-        const { default: Hls } = await import(modulePath);
-        const engine = new Hls({ enableWorker: false });
-        engine.loadSource(media);
-        engine.attachMedia(video);
-      } else video.src = media;
-      document.body.replaceChildren(video);
-      await video.play();
-    }, { media: media.url, format, origin: url });
+    const navigation = page.getByRole("navigation", { name: "主导航" });
+    await page.locator(".hg-preview-copy h1").waitFor({ timeout: 30000 });
+    await navigation.getByRole("button", { name: "搜索", exact: true }).click();
+    const search = page.getByRole("textbox", { name: "搜索所有插件" });
+    await search.fill(query);
+    await search.press("Enter");
+    await page.locator(".legacy-search-poster").first().click({ timeout: 15000 });
+    const dialog = page.getByRole("dialog", { name: "作品详情" });
+    await dialog.getByRole("heading", { name: title }).waitFor({ timeout: 15000 });
+    await dialog.locator(".hg-watch-action").click({ timeout: 15000 });
     await page.waitForFunction(() => {
-      const video = document.querySelector("video");
+      const video = document.querySelector(".hg-watching video");
       return video?.videoWidth > 0 && video.currentTime > .4;
-    }, { timeout: 25000 });
-    note("Edge decoded and advanced real " + format + " through Rust media proxy");
+    }, null, { timeout: 35000 });
+    note("React iPhone-size home, search, detail and Edge decoded real " + format + " through Rust proxy");
+    if (output) await page.screenshot({ path: join(resolve(output, ".."), "ios-full-" + format.toLowerCase() + "-edge.png") });
   }
   await browser.close(); browser = null;
   await vite.close(); vite = null;

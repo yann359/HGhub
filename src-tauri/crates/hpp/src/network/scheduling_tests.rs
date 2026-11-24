@@ -246,7 +246,9 @@ async fn shared_waiters_keep_own_timeout_and_credentials_never_merge() {
 #[tokio::test]
 async fn api_limits_cover_bodies_and_leave_other_hosts_and_media_available() {
     let (base, fixture, server) = fixture().await;
-    let other = base.replace("127.0.0.1", "127.0.0.2");
+    // Use a second host key on the existing loopback address. macOS does not
+    // accept 127.0.0.2 unless it is explicitly added to the loopback interface.
+    let other = base.replace("127.0.0.1", "localhost");
     let dir = tempfile::tempdir().unwrap();
     let network = network(dir.path());
     let cancel = CancellationToken::new();

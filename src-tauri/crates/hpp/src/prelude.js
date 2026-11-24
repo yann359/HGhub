@@ -206,7 +206,15 @@
   Object.assign(globalThis,{AbortSignal,AbortController,TextEncoder,TextDecoder,URL,URLSearchParams,setTimeout,clearTimeout,structuredClone,
     queueMicrotask:fn=>Promise.resolve().then(fn),
     atob:s=>{const bytes=sync("codec.base64Decode",{text:String(s)});let out="";for(let i=0;i<bytes.length;i+=8192)out+=String.fromCharCode.apply(null,bytes.subarray(i,i+8192));return out;},
-    btoa:s=>{s=String(s);if([...s].some(c=>c.charCodeAt(0)>255))throw new TypeError("Invalid character");return sync("codec.base64Encode",{data:new Uint8Array([...s].map(c=>c.charCodeAt(0)))});},
+    btoa:s=>{
+      const text=String(s), bytes=new Uint8Array(text.length);
+      for(let i=0;i<text.length;i++){
+        const byte=text.charCodeAt(i);
+        if(byte>255)throw new TypeError("Invalid character");
+        bytes[i]=byte;
+      }
+      return sync("codec.base64Encode",{data:bytes});
+    },
     crypto:{getRandomValues(array){if(!ArrayBuffer.isView(array)||array instanceof DataView||array instanceof Float32Array||array instanceof Float64Array||array.byteLength>65536)throw new TypeError("Expected integer typed array, at most 65536 bytes");new Uint8Array(array.buffer,array.byteOffset,array.byteLength).set(sync("crypto.randomBytes",{length:array.byteLength}));return array;},randomUUID:()=>sync("crypto.randomUUID",{})},
     console:Object.fromEntries(["debug","log","info","warn","error"].map(level=>[level,(...args)=>sync("log",{level:level==='log'?'info':level,text:logText(args)})]))});
   return api;
