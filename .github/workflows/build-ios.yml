@@ -1,16 +1,23 @@
 name: HGhub iOS Full
 on:
   workflow_dispatch:
+    inputs:
+      mode:
+        description: Build target
+        type: choice
+        default: all
+        options: [all, device, simulator]
   push:
     branches: [codex/ios-liquid-glass-plugin]
     paths-ignore: ['**.md', 'docs/**']
 permissions:
   contents: read
 concurrency:
-  group: ios-${{ github.ref }}
+  group: ios-${{ github.ref }}-${{ inputs.mode || 'all' }}
   cancel-in-progress: false
 jobs:
   ios:
+    if: inputs.mode != 'simulator'
     runs-on: macos-15
     timeout-minutes: 60
     env:
@@ -75,6 +82,7 @@ jobs:
           retention-days: 30
 
   simulator:
+    if: inputs.mode != 'device'
     runs-on: xcode-27
     timeout-minutes: 55
     env:

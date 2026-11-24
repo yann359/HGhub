@@ -5,21 +5,22 @@ IDENTIFIER="${2:?Pass the simulator bundle identifier}"
 LOG=artifacts/logs
 xcrun simctl list devices available -j > "$LOG/simulator-devices.json"
 CHOICE="$(python3 - "$LOG/simulator-devices.json" <<'PY'
-import json, sys
+import json, re, sys
 data = json.load(open(sys.argv[1], encoding="utf-8"))
 candidates = [
-    (tuple(map(int, runtime.split(".iOS-")[-1].split("-"))), d["name"] == "iPhone 17 Pro Max", d["name"], d["udid"])
-    for runtime, devices in data["devices"].items() if ".iOS-" in runtime
+    (version[0] >= 27, d["name"] == "iPhone 17 Pro Max", version, d["name"], d["udid"])
+    for runtime, devices in data["devices"].items()
+    if (match := re.search(r"\.iOS-(\d+(?:-\d+)*)", runtime))
+    for version in [tuple(map(int, match[1].split("-")))]
     for d in devices if d.get("isAvailable") and d["name"].startswith("iPhone")
 ]
 if not candidates:
     sys.exit("No iOS simulator available")
-version, _, name, udid = max(candidates)
+_, _, version, name, udid = max(candidates)
 print(udid)
 print(f"{name} / iOS {'.'.join(map(str, version))}", file=sys.stderr)
 PY
 )"
-xcrun simctl boot "$CHOICE"
 trap 'xcrun simctl shutdown "$CHOICE" || true' EXIT
 xcrun simctl bootstatus "$CHOICE" -b
 codesign --force --sign - "$APP"
