@@ -25,10 +25,19 @@
 - Windows 真实 HPP、QuickJS 和本机代理已实测三个插件为 ready，读取真实 Mux HLS 播放列表及 NASA 官方 API 经解析后得到的 MP4 Range。真实浏览器端到端测试已完成。Edge 从搜索打开详情，解码《大雄兔》HLS 和 NASA 月相 MP4，播放进度继续前进。另验证清晰度、分集、备用线路、字幕转换、HTTPS 清单和版本检查。
 - 首轮 Actions（45379586979）已用 Xcode 27.1 编译 ARM64 iOS 模拟器应用。测试脚本因运行时标识带设备后缀而提前退出，修正后重新运行。
 - 首轮 macOS 设备工作流在插件网络测试阶段中止。旧测试使用 macOS 未配置的 127.0.0.2，已改用同一回环端口的 localhost 验证独立的主机限流。另修复 QuickJS 大 Base64 编码过多分配，Windows 专项复测通过。
-- 本轮运行脚本、模拟器启动、Xcode ARM64 IPA、实际签名安装、iPhone 17 Pro Max 和 iOS 27 真机状态继续按观察结果记录。
+- Windows 与 Xcode 27.1 运行器的 macOS HPP 串行回归各 97 项通过；Edge 真实上游回归 10 组通过，合成素材播放器交互专项 3 组通过。通过应用内代理核验 NASA 全部 7 个分集以及《辛特尔》的 14 个 MP4 播放变体，均为 H.264。
+- 本轮应用构建锁定 98cedd3，合并版本 v0.0.5 与定制补丁均包含在内。真实设备 ARM64 打包日志 [45384124235](https://github.com/yann359/HGhub/actions/runs/45384124235)，iOS 27 系列模拟器日志 [45386761668](https://github.com/yann359/HGhub/actions/runs/45386761668)。ARM64 构建与产物校验已通过。同一版应用源码完成模拟器编译，iPhone 18 Pro Max / iOS 27.2 的模拟器系统启动等待超时，尚未安装或启动 HGhub。真机未连接。
 
-## 尚待验收
+## IPA 记录
 
+- 文件 HGhub_iOS_Full.ipa，5,591,120 字节，SHA-256 `34b83b0af255492fdff148c9de9a7940505672784a9a20c3d195db7444a7ff82`。
+- GitHub Actions 使用 Xcode 27.1 和 iOS 27.1 SDK，arm64 真机 Release，最低 iOS 16.4，Bundle ID 为 com.yann359.hghub.ios。
+- 本机复核 ZIP CRC、13 个条目、Payload、Info.plist、ARM64 Mach-O、执行权限、ATS、方向、无开发 URL、未加密、无描述文件，以及清单和三个插件源内容。
+- [GitHub Actions 产物](https://github.com/yann359/HGhub/actions/runs/45384124235/artifacts/14915483439) 与本地 dist/ios-full/HGhub_iOS_Full.ipa 一致。当前交付为个人签名侧载前的未签名包。
+
+## 尚待验收与下一步
+
+- 使用可启动的 iOS 27 模拟器重跑安装、首启、重启和真实首帧。当前日志见测试报告。
 - 使用个人 Apple 证书签名后，真机检查首次启动、首页/搜索/详情、HLS 和 MP4、切集/线路/清晰度、字幕、全屏、倍速、历史与续播、Files 导入、灵动岛与横屏。
 - 当前授权片库覆盖开放动画短片和 NASA 科普影像。其余影视类别和直播待有允许集成的内容方。
 - 默认插件可沿用 HPP 的版本检查与自动更新，也可用本地或 HTTPS 清单手动恢复。

@@ -120,8 +120,9 @@ jobs:
       - name: Check launch and playback on iOS Simulator
         timeout-minutes: 7
         run: |
+          set -o pipefail
           bundle_id="$(node -p "require('./src-tauri/tauri.ios.conf.json').identifier")"
-          bash scripts/smoke-ios-simulator.sh "$PWD/build_output/Build/Products/release-iphonesimulator/HGhub.app" "$bundle_id"
+          bash scripts/smoke-ios-simulator.sh "$PWD/build_output/Build/Products/release-iphonesimulator/HGhub.app" "$bundle_id" 2>&1 | tee artifacts/logs/simulator-runtime.log
       - name: Upload simulator diagnostics
         if: always()
         uses: actions/upload-artifact@v4

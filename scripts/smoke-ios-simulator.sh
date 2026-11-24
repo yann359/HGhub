@@ -27,7 +27,7 @@ print(udid)
 print(f"{name} / iOS {'.'.join(map(str, version))}", file=sys.stderr)
 PY
 )"
-trap 'simctl shutdown "$CHOICE" || true' EXIT
+trap 'HGHUB_SIM_WAIT=15 simctl shutdown "$CHOICE" || true' EXIT
 echo "Starting simulator"
 simctl boot "$CHOICE"
 HGHUB_SIM_WAIT=150 simctl bootstatus "$CHOICE" -b
