@@ -7,6 +7,11 @@ on:
         type: choice
         default: all
         options: [all, device, simulator]
+      device_runner:
+        description: Xcode runner for the device archive
+        type: choice
+        default: macos-15
+        options: [macos-15, xcode-27]
   push:
     branches: [codex/ios-liquid-glass-plugin]
     paths-ignore: ['**.md', 'docs/**']
@@ -18,7 +23,7 @@ concurrency:
 jobs:
   ios:
     if: inputs.mode != 'simulator'
-    runs-on: macos-15
+    runs-on: ${{ inputs.device_runner || 'macos-15' }}
     timeout-minutes: 60
     env:
       CARGO_TERM_COLOR: always

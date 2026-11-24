@@ -128,6 +128,30 @@ try {
     const body = await dispatch(action, params);
     await route.fulfill({ json: body });
   });
+  const loadedVideo = () => page.waitForFunction(() => {
+    const video = document.querySelector(".hg-watching video");
+    return video?.videoWidth > 0 && video.readyState >= 3 && !video.paused && video.currentTime > .4;
+  }, null, { timeout: 35000 });
+
+  await page.goto(url + "/tests/plugins.html");
+  const tabs = page.getByRole("navigation", { name: "主导航" });
+  for (const tab of await tabs.getByRole("button").all()) {
+    const box = await tab.boundingBox();
+    assert(box && box.width >= 44 && box.height >= 44);
+  }
+  await tabs.getByRole("button", { name: "我的", exact: true }).click();
+  await page.getByRole("button", { name: "设置", exact: true }).click();
+  const appearance = page.getByRole("combobox", { name: "外观模式", exact: true });
+  await appearance.selectOption("system");
+  await page.emulateMedia({ colorScheme: "light" });
+  await page.waitForFunction(() => document.documentElement.classList.contains("theme-light"));
+  await page.emulateMedia({ colorScheme: "dark" });
+  await page.waitForFunction(() => !document.documentElement.classList.contains("theme-light"));
+  await appearance.selectOption("light");
+  await page.reload();
+  await page.waitForFunction(() => document.documentElement.classList.contains("theme-light"));
+  note("iPhone-size glass navigation and persisted light, dark and system themes");
+
   for (const { format, title, query } of [
     { format: "HLS", title: /Big Buck Bunny/, query: "大雄兔" },
     { format: "MP4", title: /月相与天平动/, query: "月相" },
@@ -143,12 +167,23 @@ try {
     const dialog = page.getByRole("dialog", { name: "作品详情" });
     await dialog.getByRole("heading", { name: title }).waitFor({ timeout: 15000 });
     await dialog.locator(".hg-watch-action").click({ timeout: 15000 });
-    await page.waitForFunction(() => {
-      const video = document.querySelector(".hg-watching video");
-      return video?.videoWidth > 0 && video.currentTime > .4;
-    }, null, { timeout: 35000 });
+    await loadedVideo();
     note("React iPhone-size home, search, detail and Edge decoded real " + format + " through Rust proxy");
     if (output) await page.screenshot({ path: join(resolve(output, ".."), "ios-full-" + format.toLowerCase() + "-edge.png") });
+    if (format === "HLS") {
+      await page.getByRole("button", { name: "更多", exact: true }).click();
+      await page.getByRole("button", { name: "画质与线路", exact: true }).click();
+      await page.getByLabel("源播放线路", { exact: true }).selectOption("archive");
+      await page.waitForFunction(() => document.querySelector(".hg-watching video")?.src.startsWith("http://127.0.0.1:"));
+      await loadedVideo();
+      note("Switching from Mux HLS to the authorized Internet Archive MP4 played in Edge");
+    } else {
+      await page.getByRole("button", { name: "选集", exact: true }).click();
+      await page.getByRole("button", { name: "月球轨道", exact: true }).click();
+      await page.waitForFunction(() => document.querySelector(".hg-watch-title p")?.textContent.includes("月球轨道"));
+      await loadedVideo();
+      note("NASA episode switching played the second upstream asset in Edge");
+    }
   }
   await browser.close(); browser = null;
   await vite.close(); vite = null;

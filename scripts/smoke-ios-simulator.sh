@@ -8,7 +8,7 @@ CHOICE="$(python3 - "$LOG/simulator-devices.json" <<'PY'
 import json, re, sys
 data = json.load(open(sys.argv[1], encoding="utf-8"))
 candidates = [
-    (version[0] >= 27, d["name"] == "iPhone 17 Pro Max", version, d["name"], d["udid"])
+    (version[0] >= 27, d["name"] == "iPhone 17 Pro Max", d["name"].endswith("Pro Max"), version, d["name"], d["udid"])
     for runtime, devices in data["devices"].items()
     if (match := re.search(r"\.iOS-(\d+(?:-\d+)*)", runtime))
     for version in [tuple(map(int, match[1].split("-")))]
@@ -16,13 +16,16 @@ candidates = [
 ]
 if not candidates:
     sys.exit("No iOS simulator available")
-_, _, version, name, udid = max(candidates)
+_, _, _, version, name, udid = max(candidates)
 print(udid)
 print(f"{name} / iOS {'.'.join(map(str, version))}", file=sys.stderr)
 PY
 )"
 trap 'xcrun simctl shutdown "$CHOICE" || true' EXIT
-xcrun simctl bootstatus "$CHOICE" -b
+python3 - "$CHOICE" <<'PY'
+import subprocess, sys
+subprocess.run(["xcrun", "simctl", "bootstatus", sys.argv[1], "-b"], check=True, timeout=300)
+PY
 codesign --force --sign - "$APP"
 xcrun simctl install "$CHOICE" "$APP"
 xcrun simctl launch "$CHOICE" "$IDENTIFIER" | tee "$LOG/simulator-launch.txt"

@@ -20,3 +20,9 @@ HGhub iOS 1.1.0 的源代码继续按 [PolyForm Noncommercial 1.0.0](../LICENSE)
 首次启动自动安装启用两组片源与一个解析器。卸载后可以从本地目录批选清单和 JS 文件，也可以用 HTTPS 清单恢复。清单 URL 可以保存为订阅，插件中心可检查更新。自动安装由设置开关控制，播放中的更新按上游 HPP 规则延后。
 
 [查看插件清单](https://raw.githubusercontent.com/yann359/HGhub/codex/ios-liquid-glass-plugin/bundled-plugins/manifest.json)
+
+## 已排除的候选
+
+- 《Sita Sings the Blues》的创作者采用 CC0，原版片中仍有另行授权的歌曲。片库未采用该片。[作品授权说明](https://www.sitasingstheblues.com/totalcompliance.html)
+- NASA 月相页面另有配乐版本。片库仅挑选核查过的可视化组。
+- 上游 HPP 的网页登录为可选能力。当前 iOS 适配器不声明 webview，显式要求它的插件会标为不兼容。当前片库无需这一能力。
