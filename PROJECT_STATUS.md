@@ -13,6 +13,7 @@
 
 - 同步上游插件导入、订阅、更新、恢复、运行预算、播放预加载、SRT 转 VTT、线路与清晰度、拖动排序和 HLS 片尾连播修复。
 - iOS 首次使用在播放能力探测后安装三个内置 HPP 模块。安装记录与插件目录分别保存，重启保留启停和卸载选择。启动时无需联网导入，播放请求使用公开 HTTPS 来源。
+- QuickJS 连续三次运行时中断时，先记录插件故障状态，再返回超时。专项测试验证状态立即变为失败，手动重试后可以继续使用。
 - iOS 文件选择器返回的文件 URL 转成本机路径。批选一份 JSON 与其同级 JS 时，在应用缓存独立暂存，兼容选择器为各文件产生不同复制目录的情况。
 - 保留玻璃底栏、简体中文、系统浅色深色、安全区与 iOS 原生视频全屏。统一 HLS 探测与实际播放路径，iOS 优先原生 HLS。更新媒体会话版本时重载流，保留暂停、前后台与播放故障处理。
 - 应用代码继续采用 PolyForm Noncommercial 1.0.0。插件清单见 bundled-plugins/manifest.json，授权和覆盖见 docs/IOS_FULL_SOURCES.md。
@@ -21,8 +22,10 @@
 
 - v0.0.5 官方 IPA 的 ZIP CRC、Payload、Info.plist 已检查。
 - 前端类型检查、生产构建、公开开发文档构建及校验、Windows Rust 检查已通过。
-- Windows 真实 HPP、QuickJS 和本机代理已实测三个插件为 ready，读取真实 Mux HLS 播放列表及 NASA 官方 API 经解析后得到的 MP4 Range。完整浏览器和回归测试正在执行。
-- iOS 模拟器、Xcode ARM64 IPA、实际签名安装、iPhone 17 Pro Max 和 iOS 27 真机状态待本轮实测记录。
+- Windows 真实 HPP、QuickJS 和本机代理已实测三个插件为 ready，读取真实 Mux HLS 播放列表及 NASA 官方 API 经解析后得到的 MP4 Range。真实浏览器端到端测试已完成。Edge 从搜索打开详情，解码《大雄兔》HLS 和 NASA 月相 MP4，播放进度继续前进。另验证清晰度、分集、备用线路、字幕转换、HTTPS 清单和版本检查。
+- 首轮 Actions（45379586979）已用 Xcode 27.1 编译 ARM64 iOS 模拟器应用。测试脚本因运行时标识带设备后缀而提前退出，修正后重新运行。
+- 首轮 macOS 设备工作流在插件网络测试阶段中止。旧测试使用 macOS 未配置的 127.0.0.2，已改用同一回环端口的 localhost 验证独立的主机限流。另修复 QuickJS 大 Base64 编码过多分配，Windows 专项复测通过。
+- 本轮运行脚本、模拟器启动、Xcode ARM64 IPA、实际签名安装、iPhone 17 Pro Max 和 iOS 27 真机状态继续按观察结果记录。
 
 ## 尚待验收
 

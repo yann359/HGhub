@@ -568,6 +568,22 @@ impl Worker {
                     if pump.is_err() || engine.interrupted.load(Ordering::Relaxed) {
                         let owner = engine.owner.borrow().clone();
                         let reason = pump.err().unwrap_or_else(PluginError::timeout);
+                        // Publish the terminal fault before replying to the third interrupted call.
+                        generation += 1;
+                        failures += 1;
+                        let faulted = failures >= 3;
+                        if faulted {
+                            let error = PluginError::internal(
+                                "运行时连续故障，已停止；请重试或重新启用插件",
+                            );
+                            logs.lock().unwrap().push(
+                                "error",
+                                &error.message,
+                                "",
+                                error.details.as_ref(),
+                            );
+                            *thread_fault.lock().unwrap() = Some(error);
+                        }
                         for (id, c) in calls.drain() {
                             let e = if id == owner {
                                 if c.cancel.is_cancelled() {
@@ -585,19 +601,7 @@ impl Worker {
                         for (_, (_, t)) in tasks.drain() {
                             t.cancel();
                         }
-                        generation += 1;
-                        failures += 1;
-                        if failures >= 3 {
-                            let error = PluginError::internal(
-                                "运行时连续故障，已停止；请重试或重新启用插件",
-                            );
-                            logs.lock().unwrap().push(
-                                "error",
-                                &error.message,
-                                "",
-                                error.details.as_ref(),
-                            );
-                            *thread_fault.lock().unwrap() = Some(error);
+                        if faulted {
                             break;
                         }
                         drop(engine);
